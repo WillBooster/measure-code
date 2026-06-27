@@ -13,6 +13,10 @@ A library for measuring code metrics with tree-sitter.
 - Cognitive complexity
 - Maximum per-function complexity
 - Nesting depth
+- Intra-file call graph metrics, including call counts, fan-in/fan-out, recursion, and call depth
+- File coupling metrics from imports and exports
+- File cohesion metrics from shared function identifiers
+- TypeScript type-shape metrics, including annotations, aliases, interfaces, generics, unions, intersections, assertions, and conditional types
 - Halstead metrics
 - Maintainability index
 

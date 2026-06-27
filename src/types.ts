@@ -45,6 +45,49 @@ export interface FunctionMetrics {
   endLine: number;
   cyclomaticComplexity: number;
   cognitiveComplexity: number;
+  callCount: number;
+  uniqueCalleeCount: number;
+  fanIn: number;
+  fanOut: number;
+  recursive: boolean;
+}
+
+export interface CallGraphMetrics {
+  callCount: number;
+  uniqueCalleeCount: number;
+  internalCallCount: number;
+  internalEdgeCount: number;
+  recursiveFunctionCount: number;
+  maxFanIn: number;
+  maxFanOut: number;
+  maxCallDepth: number;
+}
+
+export interface CouplingMetrics {
+  importCount: number;
+  importSourceCount: number;
+  relativeImportCount: number;
+  externalImportCount: number;
+  exportCount: number;
+}
+
+export interface CohesionMetrics {
+  averageFunctionIdentifierOverlap: number;
+  sharedIdentifierCount: number;
+  uniqueIdentifierCount: number;
+}
+
+export interface TypeComplexityMetrics {
+  typeAnnotationCount: number;
+  typeAliasCount: number;
+  interfaceCount: number;
+  genericParameterCount: number;
+  unionTypeCount: number;
+  intersectionTypeCount: number;
+  conditionalTypeCount: number;
+  typeAssertionCount: number;
+  nonNullAssertionCount: number;
+  satisfiesExpressionCount: number;
 }
 
 export interface CodeMetrics {
@@ -59,6 +102,10 @@ export interface CodeMetrics {
   cognitiveComplexity: number;
   maxCognitiveComplexity: number;
   nestingDepth: number;
+  callGraph: CallGraphMetrics;
+  coupling: CouplingMetrics;
+  cohesion: CohesionMetrics;
+  typeComplexity: TypeComplexityMetrics;
   halstead: HalsteadMetrics;
   maintainabilityIndex: number;
   syntaxTree?: string;

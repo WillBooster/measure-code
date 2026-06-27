@@ -1,12 +1,16 @@
 import Parser from 'tree-sitter';
 import { createLanguageRegistry } from './languages.js';
 import type {
+  CallGraphMetrics,
   CodeMetrics,
+  CohesionMetrics,
+  CouplingMetrics,
   FunctionMetrics,
   HalsteadMetrics,
   LanguageDefinition,
   LanguageName,
   MeasureOptions,
+  TypeComplexityMetrics,
 } from './types.js';
 
 const booleanOperators = new Set(['&&', '||', 'and', 'or']);
@@ -78,6 +82,25 @@ interface CommentSpan {
   endColumn: number;
 }
 
+interface FunctionAnalysis {
+  name?: string;
+  startLine: number;
+  endLine: number;
+  cyclomaticComplexity: number;
+  cognitiveComplexity: number;
+  callCount: number;
+  callees: Set<string>;
+  identifiers: Set<string>;
+}
+
+interface StructuralMetrics {
+  callGraph: CallGraphMetrics;
+  cohesion: CohesionMetrics;
+  coupling: CouplingMetrics;
+  functions: FunctionMetrics[];
+  typeComplexity: TypeComplexityMetrics;
+}
+
 export class TreeMeasurer {
   private readonly registry = createLanguageRegistry();
 
@@ -105,7 +128,8 @@ export class TreeMeasurer {
     });
     const root = tree.rootNode;
     const functions = collectNodes(root, new Set(language.functionNodeTypes));
-    const functionMetrics = functions.map((node) => measureFunction(node, language));
+    const structuralMetrics = measureStructuralMetrics(root, functions, language);
+    const functionMetrics = structuralMetrics.functions;
     const globalComplexity = measureComplexity(root, language, 0);
     const lines = measureLines(code, root);
     const halstead = measureHalstead(root, code);
@@ -122,6 +146,10 @@ export class TreeMeasurer {
       cognitiveComplexity: globalComplexity.cognitiveComplexity,
       maxCognitiveComplexity: maxMetric(functionMetrics, 'cognitiveComplexity'),
       nestingDepth: globalComplexity.nestingDepth,
+      callGraph: structuralMetrics.callGraph,
+      coupling: structuralMetrics.coupling,
+      cohesion: structuralMetrics.cohesion,
+      typeComplexity: structuralMetrics.typeComplexity,
       halstead,
       maintainabilityIndex: calculateMaintainabilityIndex(
         halstead.volume,
@@ -139,15 +167,99 @@ export function measureCode(code: string, options: MeasureOptions): CodeMetrics 
   return defaultMeasurer.measure(code, options);
 }
 
-function measureFunction(node: Parser.SyntaxNode, language: LanguageDefinition): FunctionMetrics {
-  const complexity = measureComplexity(node, language, 0);
+function measureStructuralMetrics(
+  root: Parser.SyntaxNode,
+  functions: Parser.SyntaxNode[],
+  language: LanguageDefinition
+): StructuralMetrics {
+  const analyses = functions.map((node) => analyzeFunction(node, language));
+  const callGraph = measureCallGraph(analyses);
+  const functionsWithGraph = analyses.map((analysis) => ({
+    name: analysis.name,
+    startLine: analysis.startLine,
+    endLine: analysis.endLine,
+    cyclomaticComplexity: analysis.cyclomaticComplexity,
+    cognitiveComplexity: analysis.cognitiveComplexity,
+    callCount: analysis.callCount,
+    uniqueCalleeCount: analysis.callees.size,
+    fanIn: callGraph.fanInByName.get(analysis.name ?? '') ?? 0,
+    fanOut: callGraph.fanOutByName.get(analysis.name ?? '') ?? 0,
+    recursive: callGraph.recursiveNames.has(analysis.name ?? ''),
+  }));
 
+  return {
+    functions: functionsWithGraph,
+    callGraph: callGraph.metrics,
+    coupling: measureCoupling(root),
+    cohesion: measureCohesion(analyses),
+    typeComplexity: measureTypeComplexity(root),
+  };
+}
+
+function analyzeFunction(node: Parser.SyntaxNode, language: LanguageDefinition): FunctionAnalysis {
+  const complexity = measureComplexity(node, language, 0);
+  const calls = collectCalls(node);
   return {
     name: findFunctionName(node),
     startLine: node.startPosition.row + 1,
     endLine: node.endPosition.row + 1,
     cyclomaticComplexity: complexity.cyclomaticComplexity,
     cognitiveComplexity: complexity.cognitiveComplexity,
+    callCount: calls.callCount,
+    callees: calls.callees,
+    identifiers: collectIdentifiers(node),
+  };
+}
+
+function measureCallGraph(analyses: FunctionAnalysis[]): {
+  fanInByName: Map<string, number>;
+  fanOutByName: Map<string, number>;
+  metrics: CallGraphMetrics;
+  recursiveNames: Set<string>;
+} {
+  const functionNames = new Set(analyses.map((analysis) => analysis.name).filter((name) => name !== undefined));
+  const fanInByName = new Map<string, number>();
+  const fanOutByName = new Map<string, number>();
+  const graph = new Map<string, Set<string>>();
+  let callCount = 0;
+  let internalCallCount = 0;
+  const allCallees = new Set<string>();
+
+  for (const analysis of analyses) {
+    callCount += analysis.callCount;
+    for (const callee of analysis.callees) {
+      allCallees.add(callee);
+    }
+
+    if (!analysis.name) {
+      continue;
+    }
+
+    const internalCallees = new Set([...analysis.callees].filter((callee) => functionNames.has(callee)));
+    graph.set(analysis.name, internalCallees);
+    fanOutByName.set(analysis.name, internalCallees.size);
+    for (const callee of internalCallees) {
+      fanInByName.set(callee, (fanInByName.get(callee) ?? 0) + 1);
+      internalCallCount += 1;
+    }
+  }
+
+  const recursiveNames = findRecursiveNames(graph);
+
+  return {
+    fanInByName,
+    fanOutByName,
+    recursiveNames,
+    metrics: {
+      callCount,
+      uniqueCalleeCount: allCallees.size,
+      internalCallCount,
+      internalEdgeCount: sum([...graph.values()].map((callees) => callees.size)),
+      recursiveFunctionCount: recursiveNames.size,
+      maxFanIn: maxMapValue(fanInByName),
+      maxFanOut: maxMapValue(fanOutByName),
+      maxCallDepth: measureMaxCallDepth(graph),
+    },
   };
 }
 
@@ -195,6 +307,45 @@ function isBooleanOperator(node: Parser.SyntaxNode): boolean {
   return booleanOperators.has(node.text);
 }
 
+function collectCalls(root: Parser.SyntaxNode): { callCount: number; callees: Set<string> } {
+  const callees = new Set<string>();
+  let callCount = 0;
+
+  function visit(node: Parser.SyntaxNode): void {
+    if (isCallNode(node)) {
+      callCount += 1;
+      const callee = findCalleeName(node);
+      if (callee) {
+        callees.add(callee);
+      }
+    }
+
+    for (const child of node.namedChildren) {
+      visit(child);
+    }
+  }
+
+  visit(root);
+  return { callCount, callees };
+}
+
+function collectIdentifiers(root: Parser.SyntaxNode): Set<string> {
+  const identifiers = new Set<string>();
+
+  function visit(node: Parser.SyntaxNode): void {
+    if (node.type === 'identifier' || node.type === 'property_identifier' || node.type === 'field_identifier') {
+      identifiers.add(node.text);
+    }
+
+    for (const child of node.namedChildren) {
+      visit(child);
+    }
+  }
+
+  visit(root);
+  return identifiers;
+}
+
 function collectNodes(root: Parser.SyntaxNode, nodeTypes: Set<string>): Parser.SyntaxNode[] {
   const nodes: Parser.SyntaxNode[] = [];
 
@@ -210,6 +361,150 @@ function collectNodes(root: Parser.SyntaxNode, nodeTypes: Set<string>): Parser.S
 
   visit(root);
   return nodes;
+}
+
+function measureCoupling(root: Parser.SyntaxNode): CouplingMetrics {
+  const importSources = new Set<string>();
+  let importCount = 0;
+  let exportCount = 0;
+  let relativeImportCount = 0;
+
+  function visit(node: Parser.SyntaxNode): void {
+    if (isImportNode(node)) {
+      importCount += 1;
+      const source = findImportSource(node);
+      if (source) {
+        importSources.add(source);
+        if (source.startsWith('.') || source.startsWith('/')) {
+          relativeImportCount += 1;
+        }
+      }
+    }
+
+    if (isExportNode(node)) {
+      exportCount += 1;
+    }
+
+    for (const child of node.namedChildren) {
+      visit(child);
+    }
+  }
+
+  visit(root);
+
+  return {
+    importCount,
+    importSourceCount: importSources.size,
+    relativeImportCount,
+    externalImportCount: importSources.size - relativeImportCount,
+    exportCount,
+  };
+}
+
+function measureCohesion(analyses: FunctionAnalysis[]): CohesionMetrics {
+  const allIdentifiers = new Set<string>();
+  const sharedIdentifiers = new Set<string>();
+  let overlapTotal = 0;
+  let pairCount = 0;
+
+  for (const analysis of analyses) {
+    for (const identifier of analysis.identifiers) {
+      allIdentifiers.add(identifier);
+    }
+  }
+
+  for (let leftIndex = 0; leftIndex < analyses.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < analyses.length; rightIndex += 1) {
+      const left = analyses[leftIndex];
+      const right = analyses[rightIndex];
+      if (!left || !right) {
+        continue;
+      }
+
+      const intersection = intersectSets(left.identifiers, right.identifiers);
+      const unionSize = new Set([...left.identifiers, ...right.identifiers]).size;
+      for (const identifier of intersection) {
+        sharedIdentifiers.add(identifier);
+      }
+      overlapTotal += unionSize === 0 ? 0 : intersection.size / unionSize;
+      pairCount += 1;
+    }
+  }
+
+  return {
+    averageFunctionIdentifierOverlap: pairCount === 0 ? 1 : overlapTotal / pairCount,
+    sharedIdentifierCount: sharedIdentifiers.size,
+    uniqueIdentifierCount: allIdentifiers.size,
+  };
+}
+
+function measureTypeComplexity(root: Parser.SyntaxNode): TypeComplexityMetrics {
+  const metrics: TypeComplexityMetrics = {
+    typeAnnotationCount: 0,
+    typeAliasCount: 0,
+    interfaceCount: 0,
+    genericParameterCount: 0,
+    unionTypeCount: 0,
+    intersectionTypeCount: 0,
+    conditionalTypeCount: 0,
+    typeAssertionCount: 0,
+    nonNullAssertionCount: 0,
+    satisfiesExpressionCount: 0,
+  };
+
+  function visit(node: Parser.SyntaxNode): void {
+    switch (node.type) {
+      case 'type_annotation': {
+        metrics.typeAnnotationCount += 1;
+        break;
+      }
+      case 'type_alias_declaration': {
+        metrics.typeAliasCount += 1;
+        break;
+      }
+      case 'interface_declaration': {
+        metrics.interfaceCount += 1;
+        break;
+      }
+      case 'type_parameters':
+      case 'type_parameter': {
+        metrics.genericParameterCount += node.type === 'type_parameter' ? 1 : 0;
+        break;
+      }
+      case 'union_type': {
+        metrics.unionTypeCount += 1;
+        break;
+      }
+      case 'intersection_type': {
+        metrics.intersectionTypeCount += 1;
+        break;
+      }
+      case 'conditional_type': {
+        metrics.conditionalTypeCount += 1;
+        break;
+      }
+      case 'as_expression':
+      case 'type_assertion': {
+        metrics.typeAssertionCount += 1;
+        break;
+      }
+      case 'non_null_expression': {
+        metrics.nonNullAssertionCount += 1;
+        break;
+      }
+      case 'satisfies_expression': {
+        metrics.satisfiesExpressionCount += 1;
+        break;
+      }
+    }
+
+    for (const child of node.namedChildren) {
+      visit(child);
+    }
+  }
+
+  visit(root);
+  return metrics;
 }
 
 function measureLines(code: string, root: Parser.SyntaxNode): CodeMetrics['lines'] {
@@ -342,6 +637,148 @@ function findFunctionName(node: Parser.SyntaxNode): string | undefined {
   return parentName?.text;
 }
 
+function isCallNode(node: Parser.SyntaxNode): boolean {
+  return node.type === 'call_expression' || node.type === 'call';
+}
+
+function findCalleeName(node: Parser.SyntaxNode): string | undefined {
+  const calleeNode = node.childForFieldName('function') ?? node.namedChild(0);
+  if (!calleeNode) {
+    return undefined;
+  }
+
+  return findRightmostIdentifier(calleeNode);
+}
+
+function findRightmostIdentifier(node: Parser.SyntaxNode): string | undefined {
+  if (
+    node.type === 'identifier' ||
+    node.type === 'property_identifier' ||
+    node.type === 'field_identifier' ||
+    node.type === 'attribute'
+  ) {
+    return node.text;
+  }
+
+  for (let index = node.namedChildCount - 1; index >= 0; index -= 1) {
+    const child = node.namedChild(index);
+    if (!child) {
+      continue;
+    }
+
+    const identifier = findRightmostIdentifier(child);
+    if (identifier) {
+      return identifier;
+    }
+  }
+
+  return undefined;
+}
+
+function isImportNode(node: Parser.SyntaxNode): boolean {
+  return (
+    node.type === 'import_statement' ||
+    node.type === 'import_declaration' ||
+    node.type === 'import_from_statement' ||
+    node.type === 'import_spec' ||
+    node.type === 'import_spec_list'
+  );
+}
+
+function findImportSource(node: Parser.SyntaxNode): string | undefined {
+  const sourceNode = findFirstStringNode(node);
+  return sourceNode ? unquote(sourceNode.text) : undefined;
+}
+
+function findFirstStringNode(node: Parser.SyntaxNode): Parser.SyntaxNode | undefined {
+  if (node.type === 'string' || node.type === 'string_literal' || node.type === 'interpreted_string_literal') {
+    return node;
+  }
+
+  for (const child of node.namedChildren) {
+    const stringNode = findFirstStringNode(child);
+    if (stringNode) {
+      return stringNode;
+    }
+  }
+
+  return undefined;
+}
+
+function unquote(value: string): string {
+  return value.replaceAll(/^['"`]|['"`]$/gu, '');
+}
+
+function isExportNode(node: Parser.SyntaxNode): boolean {
+  return node.type.startsWith('export') || node.type === 'public_field_definition';
+}
+
+function findRecursiveNames(graph: Map<string, Set<string>>): Set<string> {
+  const recursiveNames = new Set<string>();
+
+  for (const name of graph.keys()) {
+    if (canReach(name, name, graph, new Set())) {
+      recursiveNames.add(name);
+    }
+  }
+
+  return recursiveNames;
+}
+
+function canReach(start: string, target: string, graph: Map<string, Set<string>>, visited: Set<string>): boolean {
+  const callees = graph.get(start);
+  if (!callees) {
+    return false;
+  }
+
+  for (const callee of callees) {
+    if (callee === target) {
+      return true;
+    }
+
+    if (!visited.has(callee)) {
+      visited.add(callee);
+      if (canReach(callee, target, graph, visited)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function measureMaxCallDepth(graph: Map<string, Set<string>>): number {
+  let maxDepth = 0;
+  for (const name of graph.keys()) {
+    maxDepth = Math.max(maxDepth, measureCallDepth(name, graph, new Set()));
+  }
+  return maxDepth;
+}
+
+function measureCallDepth(name: string, graph: Map<string, Set<string>>, pathNames: Set<string>): number {
+  const callees = graph.get(name);
+  if (!callees || callees.size === 0 || pathNames.has(name)) {
+    return 0;
+  }
+
+  pathNames.add(name);
+  let maxDepth = 0;
+  for (const callee of callees) {
+    maxDepth = Math.max(maxDepth, 1 + measureCallDepth(callee, graph, new Set(pathNames)));
+  }
+  return maxDepth;
+}
+
+function intersectSets(left: Set<string>, right: Set<string>): Set<string> {
+  const intersection = new Set<string>();
+  for (const value of left) {
+    if (right.has(value)) {
+      intersection.add(value);
+    }
+  }
+  return intersection;
+}
+
 function calculateMaintainabilityIndex(volume: number, complexity: number, loc: number): number {
   if (loc === 0) {
     return 100;
@@ -357,6 +794,14 @@ function incrementCount(map: Map<string, number>, value: string): void {
 
 function maxMetric(functions: FunctionMetrics[], key: 'cyclomaticComplexity' | 'cognitiveComplexity'): number {
   return functions.length === 0 ? 0 : Math.max(...functions.map((fn) => fn[key]));
+}
+
+function maxMapValue(map: Map<string, number>): number {
+  let maximum = 0;
+  for (const value of map.values()) {
+    maximum = Math.max(maximum, value);
+  }
+  return maximum;
 }
 
 function sum(values: Iterable<number>): number {
