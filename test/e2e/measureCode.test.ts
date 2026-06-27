@@ -1,8 +1,11 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { measureCode, supportedLanguages } from '../../src/index.js';
 
+const fixturesDir = path.join('test', 'fixtures');
+
 interface LanguageCase {
-  code: string;
   expected: {
     classCount?: number;
     functionCount: number;
@@ -10,25 +13,20 @@ interface LanguageCase {
     language: string;
     maxCyclomaticComplexity: number;
   };
+  fixture: string;
   language: string;
   name: string;
+}
+
+function readFixture(filename: string): string {
+  return readFileSync(path.join(fixturesDir, filename), 'utf8');
 }
 
 const languageCases: LanguageCase[] = [
   {
     name: 'JavaScript',
     language: 'javascript',
-    code: [
-      'class Score {}',
-      'function score(value) {',
-      '  // ignore negative input',
-      '  if (value < 0 || value == null) {',
-      '    return 0;',
-      '  }',
-      '  return value > 10 ? 10 : value;',
-      '}',
-      '',
-    ].join('\n'),
+    fixture: 'sample.js',
     expected: {
       language: 'javascript',
       functionCount: 1,
@@ -40,11 +38,7 @@ const languageCases: LanguageCase[] = [
   {
     name: 'JSX',
     language: 'jsx',
-    code: [
-      'export function Card({ active }) {',
-      '  return <section>{active ? <span>yes</span> : null}</section>;',
-      '}',
-    ].join('\n'),
+    fixture: 'sample.jsx',
     expected: {
       language: 'jsx',
       functionCount: 1,
@@ -55,14 +49,7 @@ const languageCases: LanguageCase[] = [
   {
     name: 'TypeScript',
     language: 'typescript',
-    code: [
-      'export function choose(flag: boolean): number {',
-      '  if (flag) {',
-      '    return 1;',
-      '  }',
-      '  return 2;',
-      '}',
-    ].join('\n'),
+    fixture: 'sample.ts',
     expected: {
       language: 'typescript',
       functionCount: 1,
@@ -73,12 +60,7 @@ const languageCases: LanguageCase[] = [
   {
     name: 'TSX',
     language: 'tsx',
-    code: [
-      'type Props = { active: boolean };',
-      'export function Card({ active }: Props) {',
-      '  return <section>{active ? <span>yes</span> : null}</section>;',
-      '}',
-    ].join('\n'),
+    fixture: 'sample.tsx',
     expected: {
       language: 'tsx',
       functionCount: 1,
@@ -89,7 +71,7 @@ const languageCases: LanguageCase[] = [
   {
     name: 'Python',
     language: 'python',
-    code: ['def choose(value):', '    if value > 10:', '        return 10', '    return value'].join('\n'),
+    fixture: 'sample.py',
     expected: {
       language: 'python',
       functionCount: 1,
@@ -100,16 +82,7 @@ const languageCases: LanguageCase[] = [
   {
     name: 'Go',
     language: 'go',
-    code: [
-      'package example',
-      '',
-      'func choose(value int) int {',
-      '  if value > 10 {',
-      '    return 10',
-      '  }',
-      '  return value',
-      '}',
-    ].join('\n'),
+    fixture: 'sample.go',
     expected: {
       language: 'go',
       functionCount: 1,
@@ -122,11 +95,12 @@ const languageCases: LanguageCase[] = [
 describe('measureCode e2e', () => {
   for (const testCase of languageCases) {
     it(`measures ${testCase.name} code from the syntax tree`, () => {
-      const metrics = measureCode(testCase.code, { language: testCase.language });
+      const code = readFixture(testCase.fixture);
+      const metrics = measureCode(code, { language: testCase.language });
 
       expect(metrics.language).toBe(testCase.expected.language);
-      expect(metrics.bytes).toBe(Buffer.byteLength(testCase.code));
-      expect(metrics.lines.total).toBe(testCase.code.split('\n').length);
+      expect(metrics.bytes).toBe(Buffer.byteLength(code));
+      expect(metrics.lines.total).toBe(code.split('\n').length);
       expect(metrics.lines.code).toBeGreaterThan(0);
       expect(metrics.functionCount).toBe(testCase.expected.functionCount);
       expect(metrics.functions.map((fn) => fn.name)).toEqual(testCase.expected.functionNames);
@@ -138,29 +112,20 @@ describe('measureCode e2e', () => {
   }
 
   it('measures line counts, comments, complexity, and Halstead metrics together', () => {
-    const code = [
-      'function score(value) {',
-      '  // ignore negative input',
-      '  if (value < 0 || value == null) {',
-      '    return 0;',
-      '  }',
-      '  return value > 10 ? 10 : value;',
-      '}',
-      '',
-    ].join('\n');
+    const code = readFixture('sample.js');
 
     const metrics = measureCode(code, { language: 'javascript' });
 
     expect(metrics.lines).toEqual({
-      total: 8,
-      code: 6,
+      total: 10,
+      code: 7,
       comment: 1,
-      blank: 1,
+      blank: 2,
     });
     expect(metrics.functions[0]).toMatchObject({
       name: 'score',
-      startLine: 1,
-      endLine: 7,
+      startLine: 3,
+      endLine: 9,
       cyclomaticComplexity: 4,
       cognitiveComplexity: 3,
     });
@@ -171,18 +136,7 @@ describe('measureCode e2e', () => {
   });
 
   it('measures multiple functions and reports the maximum function complexity', () => {
-    const code = [
-      'function simple() {',
-      '  return 1;',
-      '}',
-      '',
-      'function complex(value) {',
-      '  if (value > 10) {',
-      '    return value;',
-      '  }',
-      '  return value === 0 ? 1 : value;',
-      '}',
-    ].join('\n');
+    const code = readFixture('multiple-functions.js');
 
     const metrics = measureCode(code, { language: 'javascript' });
 
