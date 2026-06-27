@@ -1,0 +1,77 @@
+{
+  "name": "tree-measurer",
+  "version": "0.0.0-semantically-released",
+  "description": "Measure code metrics with tree-sitter.",
+  "keywords": [
+    "tree-sitter",
+    "metrics",
+    "loc",
+    "cyclomatic-complexity",
+    "cognitive-complexity"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WillBooster/tree-measurer.git"
+  },
+  "license": "Apache-2.0",
+  "author": "WillBooster Inc.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.cjs",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "build-ts lib",
+    "cleanup": "yarn format && yarn lint-fix",
+    "format": "sort-package-json && yarn format-code",
+    "format-code": "oxfmt --write --no-error-on-unmatched-pattern . '!**/package.json'",
+    "lint": "oxlint --no-error-on-unmatched-pattern .",
+    "lint-fix": "yarn lint --fix",
+    "prepare": "lefthook install || true",
+    "test": "vitest",
+    "typecheck": "wb typecheck",
+    "verify": "wb verify",
+    "verify-full": "wb verify --full"
+  },
+  "dependencies": {
+    "tree-sitter": "^0.21.1",
+    "tree-sitter-go": "^0.21.2",
+    "tree-sitter-javascript": "^0.21.4",
+    "tree-sitter-python": "^0.21.0",
+    "tree-sitter-typescript": "^0.21.2"
+  },
+  "devDependencies": {
+    "@tsconfig/node-lts": "24.0.0",
+    "@tsconfig/node-ts": "23.6.4",
+    "@types/node": "25.9.4",
+    "@typescript/native-preview": "7.0.0-dev.20260615.1",
+    "@willbooster/oxfmt-config": "1.2.2",
+    "@willbooster/oxlint-config": "1.4.8",
+    "@willbooster/wb": "13.22.18",
+    "build-ts": "17.1.26",
+    "conventional-changelog-conventionalcommits": "9.3.1",
+    "lefthook": "2.1.9",
+    "oxfmt": "0.56.0",
+    "oxlint": "1.71.0",
+    "oxlint-tsgolint": "0.23.0",
+    "semantic-release": "25.0.5",
+    "sort-package-json": "4.0.0",
+    "vitest": "4.1.9"
+  },
+  "packageManager": "yarn@4.17.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
