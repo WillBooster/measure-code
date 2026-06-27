@@ -394,6 +394,12 @@ function printTextReport(target: string, result: ScanResult, risks: RiskFinding[
     `LOC ${summary.linesOfCode}, functions ${summary.functionCount}, max cyclomatic ${summary.maxCyclomaticComplexity}, max cognitive ${summary.maxCognitiveComplexity}\n`
   );
   writeStdout(
+    `Calls ${summary.callCount}, internal edges ${summary.internalCallCount}, max call depth ${summary.maxCallDepth}, imports ${summary.importSourceCount}, exports ${summary.exportCount}\n`
+  );
+  writeStdout(
+    `Type annotations ${summary.typeAnnotationCount}, type aliases ${summary.typeAliasCount}, interfaces ${summary.interfaceCount}, avg cohesion ${summary.averageFunctionIdentifierOverlap.toFixed(2)}\n`
+  );
+  writeStdout(
     `Risk thresholds: cyclomatic >= ${options.cyclomaticThreshold}, cognitive >= ${options.cognitiveThreshold}\n`
   );
 
@@ -428,17 +434,53 @@ function summarize(files: FileMetrics[]): {
   linesOfCode: number;
   maxCognitiveComplexity: number;
   maxCyclomaticComplexity: number;
+  callCount: number;
+  internalCallCount: number;
+  maxCallDepth: number;
+  importSourceCount: number;
+  relativeImportCount: number;
+  externalImportCount: number;
+  exportCount: number;
+  averageFunctionIdentifierOverlap: number;
+  typeAnnotationCount: number;
+  typeAliasCount: number;
+  interfaceCount: number;
+  genericParameterCount: number;
 } {
   let functionCount = 0;
   let linesOfCode = 0;
   let maxCyclomaticComplexity = 0;
   let maxCognitiveComplexity = 0;
+  let callCount = 0;
+  let internalCallCount = 0;
+  let maxCallDepth = 0;
+  let importSourceCount = 0;
+  let relativeImportCount = 0;
+  let externalImportCount = 0;
+  let exportCount = 0;
+  let cohesionTotal = 0;
+  let typeAnnotationCount = 0;
+  let typeAliasCount = 0;
+  let interfaceCount = 0;
+  let genericParameterCount = 0;
 
   for (const file of files) {
     functionCount += file.metrics.functionCount;
     linesOfCode += file.metrics.lines.code;
     maxCyclomaticComplexity = Math.max(maxCyclomaticComplexity, file.metrics.maxCyclomaticComplexity);
     maxCognitiveComplexity = Math.max(maxCognitiveComplexity, file.metrics.maxCognitiveComplexity);
+    callCount += file.metrics.callGraph.callCount;
+    internalCallCount += file.metrics.callGraph.internalCallCount;
+    maxCallDepth = Math.max(maxCallDepth, file.metrics.callGraph.maxCallDepth);
+    importSourceCount += file.metrics.coupling.importSourceCount;
+    relativeImportCount += file.metrics.coupling.relativeImportCount;
+    externalImportCount += file.metrics.coupling.externalImportCount;
+    exportCount += file.metrics.coupling.exportCount;
+    cohesionTotal += file.metrics.cohesion.averageFunctionIdentifierOverlap;
+    typeAnnotationCount += file.metrics.typeComplexity.typeAnnotationCount;
+    typeAliasCount += file.metrics.typeComplexity.typeAliasCount;
+    interfaceCount += file.metrics.typeComplexity.interfaceCount;
+    genericParameterCount += file.metrics.typeComplexity.genericParameterCount;
   }
 
   return {
@@ -447,6 +489,18 @@ function summarize(files: FileMetrics[]): {
     linesOfCode,
     maxCyclomaticComplexity,
     maxCognitiveComplexity,
+    callCount,
+    internalCallCount,
+    maxCallDepth,
+    importSourceCount,
+    relativeImportCount,
+    externalImportCount,
+    exportCount,
+    averageFunctionIdentifierOverlap: files.length === 0 ? 0 : cohesionTotal / files.length,
+    typeAnnotationCount,
+    typeAliasCount,
+    interfaceCount,
+    genericParameterCount,
   };
 }
 
