@@ -128,27 +128,35 @@ function resolveTarget(target: string): string {
 async function scanTarget(target: string, options: CliOptions): Promise<ScanResult> {
   const files: FileMetrics[] = [];
   const errors: string[] = [];
+  const visitedFiles = new Set<string>();
+  let canonicalTarget = target;
+  try {
+    canonicalTarget = await realpath(target);
+  } catch {
+    // stat below reports missing targets with the original path.
+  }
+
   let targetStat;
 
   try {
-    targetStat = await stat(target);
+    targetStat = await stat(canonicalTarget);
   } catch (error) {
-    const fatalError = `${relativePath(target)}: ${formatError(error)}`;
+    const fatalError = `${relativePath(canonicalTarget)}: ${formatError(error)}`;
     return { files, errors: [fatalError], fatalError };
   }
 
   if (targetStat.isFile()) {
-    const language = getLanguage(target, options, true);
+    const language = getLanguage(canonicalTarget, options, true);
     if (!language) {
-      const fatalError = `${relativePath(target)}: unsupported file type`;
+      const fatalError = `${relativePath(canonicalTarget)}: unsupported file type`;
       return { files, errors: [fatalError], fatalError };
     }
 
-    await measureFile(target, language, files, errors);
+    await measureFile(canonicalTarget, language, files, errors, visitedFiles, canonicalTarget);
     return { files, errors };
   }
 
-  await scanDirectory(target, options, files, errors, new Set());
+  await scanDirectory(canonicalTarget, options, files, errors, new Set(), visitedFiles);
   return { files, errors };
 }
 
@@ -158,6 +166,7 @@ async function scanDirectory(
   files: FileMetrics[],
   errors: string[],
   visitedDirectories: Set<string>,
+  visitedFiles: Set<string>,
   rootDirectory?: string
 ): Promise<void> {
   let resolvedDirectory;
@@ -189,7 +198,7 @@ async function scanDirectory(
   for (const entry of entries) {
     const entryPath = path.join(directory, entry.name);
     if (entry.isSymbolicLink()) {
-      await scanSymbolicLink(entry.name, entryPath, options, files, errors, visitedDirectories, scanRoot);
+      await scanSymbolicLink(entry.name, entryPath, options, files, errors, visitedDirectories, visitedFiles, scanRoot);
       continue;
     }
 
@@ -197,12 +206,12 @@ async function scanDirectory(
       if (shouldSkipDirectory(entry.name, options)) {
         continue;
       }
-      await scanDirectory(entryPath, options, files, errors, visitedDirectories, scanRoot);
+      await scanDirectory(entryPath, options, files, errors, visitedDirectories, visitedFiles, scanRoot);
       continue;
     }
 
     if (entry.isFile()) {
-      await measureScannableFile(entryPath, options, files, errors);
+      await measureScannableFile(entryPath, options, files, errors, visitedFiles);
     }
   }
 }
@@ -214,6 +223,7 @@ async function scanSymbolicLink(
   files: FileMetrics[],
   errors: string[],
   visitedDirectories: Set<string>,
+  visitedFiles: Set<string>,
   rootDirectory: string
 ): Promise<void> {
   let resolvedPath;
@@ -240,12 +250,12 @@ async function scanSymbolicLink(
     if (shouldSkipDirectory(name, options)) {
       return;
     }
-    await scanDirectory(entryPath, options, files, errors, visitedDirectories, rootDirectory);
+    await scanDirectory(entryPath, options, files, errors, visitedDirectories, visitedFiles, rootDirectory);
     return;
   }
 
   if (entryStat.isFile()) {
-    await measureScannableFile(entryPath, options, files, errors);
+    await measureScannableFile(entryPath, options, files, errors, visitedFiles, resolvedPath, resolvedPath);
   }
 }
 
@@ -253,11 +263,14 @@ async function measureScannableFile(
   file: string,
   options: CliOptions,
   files: FileMetrics[],
-  errors: string[]
+  errors: string[],
+  visitedFiles: Set<string>,
+  languageFile = file,
+  realFile?: string
 ): Promise<void> {
-  const language = getLanguage(file, options);
+  const language = getLanguage(languageFile, options);
   if (language) {
-    await measureFile(file, language, files, errors);
+    await measureFile(file, language, files, errors, visitedFiles, realFile);
   }
 }
 
@@ -265,9 +278,17 @@ async function measureFile(
   file: string,
   language: LanguageName,
   files: FileMetrics[],
-  errors: string[]
+  errors: string[],
+  visitedFiles: Set<string>,
+  realFile?: string
 ): Promise<void> {
   try {
+    const resolvedFile = realFile ?? (await realpath(file));
+    if (visitedFiles.has(resolvedFile)) {
+      return;
+    }
+    visitedFiles.add(resolvedFile);
+
     const code = await readFile(file, 'utf8');
     files.push({
       file,
@@ -418,7 +439,7 @@ function shouldSkipDirectory(name: string, options: CliOptions): boolean {
 
 function isWithinDirectory(candidate: string, directory: string): boolean {
   const relative = path.relative(directory, candidate);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function getLanguage(file: string, options: CliOptions, explicitTarget = false): LanguageName | undefined {
