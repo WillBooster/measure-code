@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Command, InvalidArgumentError } from 'commander';
@@ -77,7 +77,10 @@ const testDirectoryNames = new Set(['__tests__', 'test', 'tests']);
 const testFilePattern = /(?:^test[_-].*|\.(?:spec|test)|[_-]test)\.[^.]+$/iu;
 
 // oxlint-disable-next-line unicorn/prefer-top-level-await -- CommonJS build output cannot preserve top-level await.
-void main();
+void main().catch((error: unknown) => {
+  writeStderr(`Error: ${formatError(error)}\n`);
+  process.exitCode = 1;
+});
 
 async function main(): Promise<void> {
   const program = new Command()
@@ -145,7 +148,7 @@ async function scanTarget(target: string, options: CliOptions): Promise<ScanResu
     return { files, errors };
   }
 
-  await scanDirectory(target, options, files, errors);
+  await scanDirectory(target, options, files, errors, new Set());
   return { files, errors };
 }
 
@@ -153,8 +156,22 @@ async function scanDirectory(
   directory: string,
   options: CliOptions,
   files: FileMetrics[],
-  errors: string[]
+  errors: string[],
+  visitedDirectories: Set<string>
 ): Promise<void> {
+  let resolvedDirectory;
+  try {
+    resolvedDirectory = await realpath(directory);
+  } catch (error) {
+    errors.push(`${relativePath(directory)}: ${formatError(error)}`);
+    return;
+  }
+
+  if (visitedDirectories.has(resolvedDirectory)) {
+    return;
+  }
+  visitedDirectories.add(resolvedDirectory);
+
   let entries;
   try {
     entries = await readdir(directory, { withFileTypes: true });
@@ -165,18 +182,63 @@ async function scanDirectory(
 
   for (const entry of entries) {
     const entryPath = path.join(directory, entry.name);
+    if (entry.isSymbolicLink()) {
+      await scanSymbolicLink(entry.name, entryPath, options, files, errors, visitedDirectories);
+      continue;
+    }
+
     if (entry.isDirectory()) {
       if (shouldSkipDirectory(entry.name, options)) {
         continue;
       }
-      await scanDirectory(entryPath, options, files, errors);
+      await scanDirectory(entryPath, options, files, errors, visitedDirectories);
       continue;
     }
 
-    const language = getLanguage(entryPath, options);
-    if (entry.isFile() && language) {
-      await measureFile(entryPath, language, files, errors);
+    if (entry.isFile()) {
+      await measureScannableFile(entryPath, options, files, errors);
     }
+  }
+}
+
+async function scanSymbolicLink(
+  name: string,
+  entryPath: string,
+  options: CliOptions,
+  files: FileMetrics[],
+  errors: string[],
+  visitedDirectories: Set<string>
+): Promise<void> {
+  let entryStat;
+  try {
+    entryStat = await stat(entryPath);
+  } catch (error) {
+    errors.push(`${relativePath(entryPath)}: ${formatError(error)}`);
+    return;
+  }
+
+  if (entryStat.isDirectory()) {
+    if (shouldSkipDirectory(name, options)) {
+      return;
+    }
+    await scanDirectory(entryPath, options, files, errors, visitedDirectories);
+    return;
+  }
+
+  if (entryStat.isFile()) {
+    await measureScannableFile(entryPath, options, files, errors);
+  }
+}
+
+async function measureScannableFile(
+  file: string,
+  options: CliOptions,
+  files: FileMetrics[],
+  errors: string[]
+): Promise<void> {
+  const language = getLanguage(file, options);
+  if (language) {
+    await measureFile(file, language, files, errors);
   }
 }
 
