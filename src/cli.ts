@@ -74,7 +74,7 @@ const ignoredDirectoryNames = new Set([
 ]);
 
 const testDirectoryNames = new Set(['__tests__', 'test', 'tests']);
-const testFilePattern = /(?:^test[_-].*|\.(?:spec|test)|[_-]test)\.[^.]+$/iu;
+const testFilePattern = /(?:^test(?:[_-].*)?|\.(?:spec|test)|[_-]test)\.[^.]+$/iu;
 
 // oxlint-disable-next-line unicorn/prefer-top-level-await -- CommonJS build output cannot preserve top-level await.
 void main().catch((error: unknown) => {
@@ -157,13 +157,19 @@ async function scanDirectory(
   options: CliOptions,
   files: FileMetrics[],
   errors: string[],
-  visitedDirectories: Set<string>
+  visitedDirectories: Set<string>,
+  rootDirectory?: string
 ): Promise<void> {
   let resolvedDirectory;
   try {
     resolvedDirectory = await realpath(directory);
   } catch (error) {
     errors.push(`${relativePath(directory)}: ${formatError(error)}`);
+    return;
+  }
+
+  const scanRoot = rootDirectory ?? resolvedDirectory;
+  if (!isWithinDirectory(resolvedDirectory, scanRoot)) {
     return;
   }
 
@@ -183,7 +189,7 @@ async function scanDirectory(
   for (const entry of entries) {
     const entryPath = path.join(directory, entry.name);
     if (entry.isSymbolicLink()) {
-      await scanSymbolicLink(entry.name, entryPath, options, files, errors, visitedDirectories);
+      await scanSymbolicLink(entry.name, entryPath, options, files, errors, visitedDirectories, scanRoot);
       continue;
     }
 
@@ -191,7 +197,7 @@ async function scanDirectory(
       if (shouldSkipDirectory(entry.name, options)) {
         continue;
       }
-      await scanDirectory(entryPath, options, files, errors, visitedDirectories);
+      await scanDirectory(entryPath, options, files, errors, visitedDirectories, scanRoot);
       continue;
     }
 
@@ -207,8 +213,21 @@ async function scanSymbolicLink(
   options: CliOptions,
   files: FileMetrics[],
   errors: string[],
-  visitedDirectories: Set<string>
+  visitedDirectories: Set<string>,
+  rootDirectory: string
 ): Promise<void> {
+  let resolvedPath;
+  try {
+    resolvedPath = await realpath(entryPath);
+  } catch (error) {
+    errors.push(`${relativePath(entryPath)}: ${formatError(error)}`);
+    return;
+  }
+
+  if (!isWithinDirectory(resolvedPath, rootDirectory)) {
+    return;
+  }
+
   let entryStat;
   try {
     entryStat = await stat(entryPath);
@@ -221,7 +240,7 @@ async function scanSymbolicLink(
     if (shouldSkipDirectory(name, options)) {
       return;
     }
-    await scanDirectory(entryPath, options, files, errors, visitedDirectories);
+    await scanDirectory(entryPath, options, files, errors, visitedDirectories, rootDirectory);
     return;
   }
 
@@ -395,6 +414,11 @@ function shouldSkipDirectory(name: string, options: CliOptions): boolean {
   }
 
   return testDirectoryNames.has(name);
+}
+
+function isWithinDirectory(candidate: string, directory: string): boolean {
+  const relative = path.relative(directory, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 function getLanguage(file: string, options: CliOptions, explicitTarget = false): LanguageName | undefined {
