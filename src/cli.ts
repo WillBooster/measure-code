@@ -64,6 +64,7 @@ const ignoredDirectoryNames = new Set([
   'coverage',
   'dist',
   'env',
+  'generated',
   'node_modules',
   'out',
   'temp',
@@ -204,7 +205,7 @@ function findRiskyFunctions(files: FileMetrics[], options: CliOptions): RiskFind
   );
 
   findings.sort((left, right) => right.score - left.score || right.cyclomaticComplexity - left.cyclomaticComplexity);
-  return findings.slice(0, options.maxFindings);
+  return findings;
 }
 
 function isRiskyFunction(fn: FunctionMetrics, options: CliOptions): boolean {
@@ -234,6 +235,7 @@ function createRiskFinding(
 
 function printJson(result: ScanResult, risks: RiskFinding[], options: CliOptions): void {
   const summary = summarize(result.files);
+  const reportedRisks = risks.slice(0, options.maxFindings);
   writeStdout(
     JSON.stringify(
       {
@@ -242,7 +244,9 @@ function printJson(result: ScanResult, risks: RiskFinding[], options: CliOptions
           cyclomaticComplexity: options.cyclomaticThreshold,
           cognitiveComplexity: options.cognitiveThreshold,
         },
-        risks,
+        totalRisks: risks.length,
+        truncated: reportedRisks.length < risks.length,
+        risks: reportedRisks,
         errors: result.errors,
       },
       undefined,
@@ -269,8 +273,10 @@ function printTextReport(target: string, result: ScanResult, risks: RiskFinding[
   if (risks.length === 0) {
     writeStdout('No high-risk functions found.\n');
   } else {
-    writeStdout(`\nHigh-risk functions (top ${risks.length}):\n`);
-    for (const risk of risks) {
+    const reportedRisks = risks.slice(0, options.maxFindings);
+    const totalSuffix = risks.length > reportedRisks.length ? ` of ${risks.length}` : '';
+    writeStdout(`\nHigh-risk functions (top ${reportedRisks.length}${totalSuffix}):\n`);
+    for (const risk of reportedRisks) {
       writeStdout(
         `${risk.file}:${risk.startLine}-${risk.endLine} ${risk.name} ` +
           `(cyclomatic ${risk.cyclomaticComplexity}, cognitive ${risk.cognitiveComplexity})\n`
