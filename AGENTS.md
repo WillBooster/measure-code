@@ -1,7 +1,7 @@
 ## Project Information
 
 - Name: `tree-measurer`
-- Description: A library for measuring code metrics with tree-sitter.
+- Description: Measure code metrics with tree-sitter.
 - Package Manager: yarn
 
 ## General Instructions
