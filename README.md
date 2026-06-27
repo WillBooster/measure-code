@@ -23,7 +23,7 @@ Built-in parsers are registered for JavaScript, JSX, TypeScript, TSX, Python, an
 ## Usage
 
 ```ts
-import { measureCode } from 'tree-measurer';
+import { measureCode } from 'measure-code';
 
 const metrics = measureCode(
   `
