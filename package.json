@@ -1,5 +1,5 @@
 {
-  "name": "tree-measurer",
+  "name": "measure-code",
   "version": "0.0.0-semantically-released",
   "description": "Measure code metrics with tree-sitter.",
   "keywords": [
@@ -11,7 +11,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/WillBooster/tree-measurer.git"
+    "url": "git+https://github.com/WillBooster/measure-code.git"
   },
   "license": "Apache-2.0",
   "author": "WillBooster Inc.",
