@@ -10,6 +10,7 @@ import type { CodeMetrics, FunctionMetrics, LanguageName } from './types.js';
 interface CliOptions {
   cognitiveThreshold: number;
   cyclomaticThreshold: number;
+  failOnError?: boolean;
   failOnRisk?: boolean;
   includeTests?: boolean;
   json?: boolean;
@@ -89,6 +90,7 @@ async function main(): Promise<void> {
     .option('--max-findings <number>', 'maximum number of risk findings to print', parsePositiveInteger, 20)
     .option('--include-tests', 'include test files and test directories')
     .option('--json', 'print JSON output')
+    .option('--fail-on-error', 'exit with code 1 when files or directories cannot be scanned')
     .option('--fail-on-risk', 'exit with code 1 when high-risk functions are found');
 
   program.action(async (target: string, options: CliOptions) => {
@@ -102,7 +104,11 @@ async function main(): Promise<void> {
       printTextReport(resolvedTarget, result, risks, options);
     }
 
-    if (result.errors.length > 0 || (options.failOnRisk && risks.length > 0)) {
+    if (
+      result.fatalError ||
+      (options.failOnError && result.errors.length > 0) ||
+      (options.failOnRisk && risks.length > 0)
+    ) {
       process.exitCode = 1;
     }
   });
