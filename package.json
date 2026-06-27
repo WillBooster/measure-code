@@ -1,6 +1,6 @@
 {
   "name": "tree-measurer",
-  "version": "0.0.0-semantically-released",
+  "version": "1.0.0",
   "description": "Measure code metrics with tree-sitter.",
   "keywords": [
     "tree-sitter",
