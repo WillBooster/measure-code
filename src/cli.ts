@@ -34,6 +34,7 @@ interface RiskFinding {
 
 interface ScanResult {
   errors: string[];
+  fatalError?: string;
   files: FileMetrics[];
 }
 
@@ -57,11 +58,15 @@ const ignoredDirectoryNames = new Set([
   '__generated__',
   'coverage',
   'dist',
+  'vendor',
   'node_modules',
   'out',
   'temp',
   'tmp',
 ]);
+
+const testDirectoryNames = new Set(['__tests__', 'test', 'tests']);
+const testFilePattern = /(?:^test[_-].*|\.(?:spec|test)|[_-]test)\.[^.]+$/iu;
 
 // oxlint-disable-next-line unicorn/prefer-top-level-await -- CommonJS build output cannot preserve top-level await.
 void main();
@@ -89,7 +94,7 @@ async function main(): Promise<void> {
       printTextReport(resolvedTarget, result, risks, options);
     }
 
-    if (options.failOnRisk && risks.length > 0) {
+    if (result.fatalError || (options.failOnRisk && risks.length > 0)) {
       process.exitCode = 1;
     }
   });
@@ -112,10 +117,17 @@ function resolveTarget(target: string): string {
 async function scanTarget(target: string, options: CliOptions): Promise<ScanResult> {
   const files: FileMetrics[] = [];
   const errors: string[] = [];
-  const targetStat = await stat(target);
+  let targetStat;
+
+  try {
+    targetStat = await stat(target);
+  } catch (error) {
+    const fatalError = `${target}: ${formatError(error)}`;
+    return { files, errors: [fatalError], fatalError };
+  }
 
   if (targetStat.isFile()) {
-    await measureFile(target, files, errors);
+    await measureFile(target, options, files, errors);
     return { files, errors };
   }
 
@@ -140,21 +152,21 @@ async function scanDirectory(
   for (const entry of entries) {
     const entryPath = path.join(directory, entry.name);
     if (entry.isDirectory()) {
-      if (shouldSkipDirectory(entry.name, entryPath, options)) {
+      if (shouldSkipDirectory(entry.name, options)) {
         continue;
       }
       await scanDirectory(entryPath, options, files, errors);
       continue;
     }
 
-    if (entry.isFile() && getLanguage(entryPath)) {
-      await measureFile(entryPath, files, errors);
+    if (entry.isFile() && getLanguage(entryPath, options)) {
+      await measureFile(entryPath, options, files, errors);
     }
   }
 }
 
-async function measureFile(file: string, files: FileMetrics[], errors: string[]): Promise<void> {
-  const language = getLanguage(file);
+async function measureFile(file: string, options: CliOptions, files: FileMetrics[], errors: string[]): Promise<void> {
+  const language = getLanguage(file, options);
   if (!language) {
     return;
   }
@@ -226,6 +238,11 @@ function printJson(result: ScanResult, risks: RiskFinding[], options: CliOptions
 }
 
 function printTextReport(target: string, result: ScanResult, risks: RiskFinding[], options: CliOptions): void {
+  if (result.fatalError) {
+    writeStderr(`Error: ${result.fatalError}\n`);
+    return;
+  }
+
   const summary = summarize(result.files);
   writeStdout(`Measured ${summary.fileCount} files under ${target}\n`);
   writeStdout(
@@ -265,16 +282,28 @@ function summarize(files: FileMetrics[]): {
   maxCognitiveComplexity: number;
   maxCyclomaticComplexity: number;
 } {
+  let functionCount = 0;
+  let linesOfCode = 0;
+  let maxCyclomaticComplexity = 0;
+  let maxCognitiveComplexity = 0;
+
+  for (const file of files) {
+    functionCount += file.metrics.functionCount;
+    linesOfCode += file.metrics.lines.code;
+    maxCyclomaticComplexity = Math.max(maxCyclomaticComplexity, file.metrics.maxCyclomaticComplexity);
+    maxCognitiveComplexity = Math.max(maxCognitiveComplexity, file.metrics.maxCognitiveComplexity);
+  }
+
   return {
     fileCount: files.length,
-    functionCount: files.reduce((total, file) => total + file.metrics.functionCount, 0),
-    linesOfCode: files.reduce((total, file) => total + file.metrics.lines.code, 0),
-    maxCyclomaticComplexity: Math.max(0, ...files.map((file) => file.metrics.maxCyclomaticComplexity)),
-    maxCognitiveComplexity: Math.max(0, ...files.map((file) => file.metrics.maxCognitiveComplexity)),
+    functionCount,
+    linesOfCode,
+    maxCyclomaticComplexity,
+    maxCognitiveComplexity,
   };
 }
 
-function shouldSkipDirectory(name: string, directory: string, options: CliOptions): boolean {
+function shouldSkipDirectory(name: string, options: CliOptions): boolean {
   if (ignoredDirectoryNames.has(name)) {
     return true;
   }
@@ -283,20 +312,28 @@ function shouldSkipDirectory(name: string, directory: string, options: CliOption
     return false;
   }
 
-  const normalized = directory.split(path.sep);
-  return normalized.includes('__tests__') || normalized.includes('test') || normalized.includes('tests');
+  return testDirectoryNames.has(name);
 }
 
-function getLanguage(file: string): LanguageName | undefined {
-  if (file.endsWith('.d.ts') || file.endsWith('.min.js')) {
+function getLanguage(file: string, options: CliOptions): LanguageName | undefined {
+  const lowerFile = file.toLowerCase();
+  if (lowerFile.endsWith('.d.ts') || lowerFile.endsWith('.min.js')) {
     return undefined;
   }
 
-  return languageByExtension.get(path.extname(file));
+  if (!options.includeTests && testFilePattern.test(path.basename(file))) {
+    return undefined;
+  }
+
+  return languageByExtension.get(path.extname(lowerFile));
 }
 
 function parsePositiveInteger(value: string): number {
-  const parsed = Number.parseInt(value, 10);
+  if (!/^[1-9]\d*$/u.test(value)) {
+    throw new InvalidArgumentError('Expected a positive integer.');
+  }
+
+  const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1) {
     throw new InvalidArgumentError('Expected a positive integer.');
   }
