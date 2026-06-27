@@ -3,7 +3,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { measureCode, supportedLanguages } from '../../src/index.js';
 
-const fixturesDir = path.join('test', 'fixtures');
+const fixturesDir = path.join(import.meta.dirname, '..', 'fixtures');
 
 interface LanguageCase {
   expected: {
