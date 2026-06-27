@@ -101,7 +101,7 @@ export class TreeMeasurer {
     const parser = new Parser();
     parser.setLanguage(language.parserLanguage);
     const tree = parser.parse(code, undefined, {
-      bufferSize: Math.max(1, Buffer.byteLength(code) * 2),
+      bufferSize: code.length + 1,
     });
     const root = tree.rootNode;
     const functions = collectNodes(root, new Set(language.functionNodeTypes));

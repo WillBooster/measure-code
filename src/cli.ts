@@ -72,7 +72,7 @@ const ignoredDirectoryNames = new Set([
 ]);
 
 const testDirectoryNames = new Set(['__tests__', 'test', 'tests']);
-const testFilePattern = /(?:^test[_-].*|\.(?:spec|test)|[_-]test)\.[^.]+$/iu;
+const testFilePattern = /(?:^test(?:[_-].*)?|\.(?:spec|test)|[_-]test)\.[^.]+$/iu;
 
 // oxlint-disable-next-line unicorn/prefer-top-level-await -- CommonJS build output cannot preserve top-level await.
 void main().catch((error: unknown) => {
