@@ -3818,6 +3818,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"commander@npm:15.0.0":
+  version: 15.0.0
+  resolution: "commander@npm:15.0.0"
+  checksum: 10c0/539229c171914ea1ccd45ee5f10d924289a12a684ea3a7a44147abe54003c35ed6de9ae4ad198d88c29fdf403dca0428451a388234e6dc01b6faa978fb207206
+  languageName: node
+  linkType: hard
+
 "commander@npm:^2.20.0":
   version: 2.20.3
   resolution: "commander@npm:2.20.3"
@@ -5698,6 +5705,7 @@ __metadata:
     "@willbooster/oxlint-config": "npm:1.4.8"
     "@willbooster/wb": "npm:13.22.18"
     build-ts: "npm:17.1.27"
+    commander: "npm:15.0.0"
     conventional-changelog-conventionalcommits: "npm:9.3.1"
     lefthook: "npm:2.1.9"
     oxfmt: "npm:0.56.0"
@@ -5711,6 +5719,8 @@ __metadata:
     tree-sitter-python: "npm:^0.21.0"
     tree-sitter-typescript: "npm:^0.21.2"
     vitest: "npm:4.1.9"
+  bin:
+    measure-code: ./dist/cli.js
   languageName: unknown
   linkType: soft
 

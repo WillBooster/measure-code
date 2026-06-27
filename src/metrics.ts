@@ -100,7 +100,9 @@ export class TreeMeasurer {
 
     const parser = new Parser();
     parser.setLanguage(language.parserLanguage);
-    const tree = parser.parse(code);
+    const tree = parser.parse(code, undefined, {
+      bufferSize: code.length + 1,
+    });
     const root = tree.rootNode;
     const functions = collectNodes(root, new Set(language.functionNodeTypes));
     const functionMetrics = functions.map((node) => measureFunction(node, language));

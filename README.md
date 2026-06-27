@@ -39,3 +39,11 @@ function score(value) {
 
 console.log(metrics.cyclomaticComplexity);
 ```
+
+## CLI
+
+```sh
+measure-code ~/ghq/github.com/WillBoosterLab/exercode
+```
+
+The CLI scans JavaScript, JSX, TypeScript, TSX, Python, and Go files, skips generated/vendor/test directories by default, and reports functions whose complexity is above the risk thresholds. Use `--include-tests` to include test files, `--json` for machine-readable output, `--max-findings` to control report length, `--fail-on-risk` or `--fail-on-error` for CI, or tune the defaults with `--cyclomatic-threshold` and `--cognitive-threshold`.
