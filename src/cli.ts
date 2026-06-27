@@ -33,6 +33,7 @@ interface RiskFinding {
 }
 
 interface ScanResult {
+  displayRoot: string;
   errors: string[];
   fatalError?: string;
   files: FileMetrics[];
@@ -63,18 +64,14 @@ const ignoredDirectoryNames = new Set([
   '__pycache__',
   'coverage',
   'dist',
-  'env',
   'generated',
   'node_modules',
-  'out',
-  'temp',
-  'tmp',
   'vendor',
   'venv',
 ]);
 
 const testDirectoryNames = new Set(['__tests__', 'test', 'tests']);
-const testFilePattern = /(?:^test(?:[_-].*)?|\.(?:spec|test)|[_-]test)\.[^.]+$/iu;
+const testFilePattern = /(?:^test[_-].*|\.(?:spec|test)|[_-]test)\.[^.]+$/iu;
 
 // oxlint-disable-next-line unicorn/prefer-top-level-await -- CommonJS build output cannot preserve top-level await.
 void main().catch((error: unknown) => {
@@ -97,7 +94,7 @@ async function main(): Promise<void> {
   program.action(async (target: string, options: CliOptions) => {
     const resolvedTarget = resolveTarget(target);
     const result = await scanTarget(resolvedTarget, options);
-    const risks = findRiskyFunctions(result.files, options);
+    const risks = findRiskyFunctions(result.files, options, result.displayRoot);
 
     if (options.json) {
       printJson(result, risks, options);
@@ -136,28 +133,30 @@ async function scanTarget(target: string, options: CliOptions): Promise<ScanResu
     // stat below reports missing targets with the original path.
   }
 
+  const fallbackDisplayRoot = path.dirname(canonicalTarget);
   let targetStat;
 
   try {
     targetStat = await stat(canonicalTarget);
   } catch (error) {
-    const fatalError = `${relativePath(canonicalTarget)}: ${formatError(error)}`;
-    return { files, errors: [fatalError], fatalError };
+    const fatalError = `${formatPath(canonicalTarget, fallbackDisplayRoot)}: ${formatError(error)}`;
+    return { displayRoot: fallbackDisplayRoot, files, errors: [fatalError], fatalError };
   }
 
   if (targetStat.isFile()) {
+    const displayRoot = path.dirname(canonicalTarget);
     const language = getLanguage(canonicalTarget, options, true);
     if (!language) {
-      const fatalError = `${relativePath(canonicalTarget)}: unsupported file type`;
-      return { files, errors: [fatalError], fatalError };
+      const fatalError = `${formatPath(canonicalTarget, displayRoot)}: unsupported file type`;
+      return { displayRoot, files, errors: [fatalError], fatalError };
     }
 
-    await measureFile(canonicalTarget, language, files, errors, visitedFiles, canonicalTarget);
-    return { files, errors };
+    await measureFile(canonicalTarget, language, files, errors, visitedFiles, displayRoot, canonicalTarget);
+    return { displayRoot, files, errors };
   }
 
-  await scanDirectory(canonicalTarget, options, files, errors, new Set(), visitedFiles);
-  return { files, errors };
+  await scanDirectory(canonicalTarget, options, files, errors, new Set(), visitedFiles, canonicalTarget);
+  return { displayRoot: canonicalTarget, files, errors };
 }
 
 async function scanDirectory(
@@ -167,18 +166,17 @@ async function scanDirectory(
   errors: string[],
   visitedDirectories: Set<string>,
   visitedFiles: Set<string>,
-  rootDirectory?: string
+  rootDirectory: string
 ): Promise<void> {
   let resolvedDirectory;
   try {
     resolvedDirectory = await realpath(directory);
   } catch (error) {
-    errors.push(`${relativePath(directory)}: ${formatError(error)}`);
+    errors.push(`${formatPath(directory, rootDirectory)}: ${formatError(error)}`);
     return;
   }
 
-  const scanRoot = rootDirectory ?? resolvedDirectory;
-  if (!isWithinDirectory(resolvedDirectory, scanRoot)) {
+  if (!isWithinDirectory(resolvedDirectory, rootDirectory)) {
     return;
   }
 
@@ -191,14 +189,23 @@ async function scanDirectory(
   try {
     entries = await readdir(directory, { withFileTypes: true });
   } catch (error) {
-    errors.push(`${relativePath(directory)}: ${formatError(error)}`);
+    errors.push(`${formatPath(directory, rootDirectory)}: ${formatError(error)}`);
     return;
   }
 
   for (const entry of entries) {
     const entryPath = path.join(directory, entry.name);
     if (entry.isSymbolicLink()) {
-      await scanSymbolicLink(entry.name, entryPath, options, files, errors, visitedDirectories, visitedFiles, scanRoot);
+      await scanSymbolicLink(
+        entry.name,
+        entryPath,
+        options,
+        files,
+        errors,
+        visitedDirectories,
+        visitedFiles,
+        rootDirectory
+      );
       continue;
     }
 
@@ -206,12 +213,12 @@ async function scanDirectory(
       if (shouldSkipDirectory(entry.name, options)) {
         continue;
       }
-      await scanDirectory(entryPath, options, files, errors, visitedDirectories, visitedFiles, scanRoot);
+      await scanDirectory(entryPath, options, files, errors, visitedDirectories, visitedFiles, rootDirectory);
       continue;
     }
 
     if (entry.isFile()) {
-      await measureScannableFile(entryPath, options, files, errors, visitedFiles);
+      await measureScannableFile(entryPath, options, files, errors, visitedFiles, rootDirectory);
     }
   }
 }
@@ -230,7 +237,7 @@ async function scanSymbolicLink(
   try {
     resolvedPath = await realpath(entryPath);
   } catch (error) {
-    errors.push(`${relativePath(entryPath)}: ${formatError(error)}`);
+    errors.push(`${formatPath(entryPath, rootDirectory)}: ${formatError(error)}`);
     return;
   }
 
@@ -242,12 +249,12 @@ async function scanSymbolicLink(
   try {
     entryStat = await stat(entryPath);
   } catch (error) {
-    errors.push(`${relativePath(entryPath)}: ${formatError(error)}`);
+    errors.push(`${formatPath(entryPath, rootDirectory)}: ${formatError(error)}`);
     return;
   }
 
   if (entryStat.isDirectory()) {
-    if (shouldSkipDirectory(name, options)) {
+    if (shouldSkipDirectory(name, options) || shouldSkipDirectory(path.basename(resolvedPath), options)) {
       return;
     }
     await scanDirectory(entryPath, options, files, errors, visitedDirectories, visitedFiles, rootDirectory);
@@ -255,7 +262,16 @@ async function scanSymbolicLink(
   }
 
   if (entryStat.isFile()) {
-    await measureScannableFile(entryPath, options, files, errors, visitedFiles, resolvedPath, resolvedPath);
+    await measureScannableFile(
+      entryPath,
+      options,
+      files,
+      errors,
+      visitedFiles,
+      rootDirectory,
+      resolvedPath,
+      resolvedPath
+    );
   }
 }
 
@@ -265,12 +281,13 @@ async function measureScannableFile(
   files: FileMetrics[],
   errors: string[],
   visitedFiles: Set<string>,
+  displayRoot: string,
   languageFile = file,
   realFile?: string
 ): Promise<void> {
   const language = getLanguage(languageFile, options);
   if (language) {
-    await measureFile(file, language, files, errors, visitedFiles, realFile);
+    await measureFile(file, language, files, errors, visitedFiles, displayRoot, realFile);
   }
 }
 
@@ -280,6 +297,7 @@ async function measureFile(
   files: FileMetrics[],
   errors: string[],
   visitedFiles: Set<string>,
+  displayRoot: string,
   realFile?: string
 ): Promise<void> {
   try {
@@ -295,15 +313,15 @@ async function measureFile(
       metrics: measureCode(code, { language }),
     });
   } catch (error) {
-    errors.push(`${relativePath(file)}: ${formatError(error)}`);
+    errors.push(`${formatPath(file, displayRoot)}: ${formatError(error)}`);
   }
 }
 
-function findRiskyFunctions(files: FileMetrics[], options: CliOptions): RiskFinding[] {
+function findRiskyFunctions(files: FileMetrics[], options: CliOptions, displayRoot: string): RiskFinding[] {
   const findings = files.flatMap(({ file, metrics }) =>
     metrics.functions
       .filter((fn) => isRiskyFunction(fn, options))
-      .map((fn) => createRiskFinding(file, metrics.language, fn, options))
+      .map((fn) => createRiskFinding(file, metrics.language, fn, options, displayRoot))
   );
 
   findings.sort((left, right) => right.score - left.score || right.cyclomaticComplexity - left.cyclomaticComplexity);
@@ -318,10 +336,11 @@ function createRiskFinding(
   file: string,
   language: LanguageName,
   fn: FunctionMetrics,
-  options: CliOptions
+  options: CliOptions,
+  displayRoot: string
 ): RiskFinding {
   return {
-    file: relativePath(file),
+    file: formatPath(file, displayRoot),
     language,
     name: fn.name ?? '<anonymous>',
     startLine: fn.startLine,
@@ -473,8 +492,8 @@ function parsePositiveInteger(value: string): number {
   return parsed;
 }
 
-function relativePath(file: string): string {
-  return path.relative(process.cwd(), file) || file;
+function formatPath(file: string, base: string): string {
+  return path.relative(base, file) || path.basename(file);
 }
 
 function writeStdout(message: string): void {

@@ -65,7 +65,6 @@ const operandNodeTypes = new Set([
   'undefined',
   'nil',
 ]);
-const minimumParserBufferSize = 2 * 1024 * 1024;
 
 interface ComplexityResult {
   cyclomaticComplexity: number;
@@ -102,7 +101,7 @@ export class TreeMeasurer {
     const parser = new Parser();
     parser.setLanguage(language.parserLanguage);
     const tree = parser.parse(code, undefined, {
-      bufferSize: Math.max(minimumParserBufferSize, Buffer.byteLength(code) * 2),
+      bufferSize: Math.max(1, Buffer.byteLength(code) * 2),
     });
     const root = tree.rootNode;
     const functions = collectNodes(root, new Set(language.functionNodeTypes));
