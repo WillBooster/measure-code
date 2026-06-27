@@ -40,10 +40,12 @@ interface ScanResult {
 
 const languageByExtension = new Map<string, LanguageName>([
   ['.cjs', 'javascript'],
+  ['.cts', 'typescript'],
   ['.go', 'go'],
   ['.js', 'javascript'],
   ['.jsx', 'jsx'],
   ['.mjs', 'javascript'],
+  ['.mts', 'typescript'],
   ['.py', 'python'],
   ['.ts', 'typescript'],
   ['.tsx', 'tsx'],
@@ -52,17 +54,22 @@ const languageByExtension = new Map<string, LanguageName>([
 const ignoredDirectoryNames = new Set([
   '.git',
   '.next',
+  '.tox',
   '.tmp',
   '.turbo',
+  '.venv',
   '.yarn',
   '__generated__',
+  '__pycache__',
   'coverage',
   'dist',
-  'vendor',
+  'env',
   'node_modules',
   'out',
   'temp',
   'tmp',
+  'vendor',
+  'venv',
 ]);
 
 const testDirectoryNames = new Set(['__tests__', 'test', 'tests']);
@@ -94,7 +101,7 @@ async function main(): Promise<void> {
       printTextReport(resolvedTarget, result, risks, options);
     }
 
-    if (result.fatalError || (options.failOnRisk && risks.length > 0)) {
+    if (result.errors.length > 0 || (options.failOnRisk && risks.length > 0)) {
       process.exitCode = 1;
     }
   });
@@ -122,12 +129,18 @@ async function scanTarget(target: string, options: CliOptions): Promise<ScanResu
   try {
     targetStat = await stat(target);
   } catch (error) {
-    const fatalError = `${target}: ${formatError(error)}`;
+    const fatalError = `${relativePath(target)}: ${formatError(error)}`;
     return { files, errors: [fatalError], fatalError };
   }
 
   if (targetStat.isFile()) {
-    await measureFile(target, options, files, errors);
+    const language = getLanguage(target, options, true);
+    if (!language) {
+      const fatalError = `${relativePath(target)}: unsupported file type`;
+      return { files, errors: [fatalError], fatalError };
+    }
+
+    await measureFile(target, language, files, errors);
     return { files, errors };
   }
 
@@ -145,7 +158,7 @@ async function scanDirectory(
   try {
     entries = await readdir(directory, { withFileTypes: true });
   } catch (error) {
-    errors.push(`${directory}: ${formatError(error)}`);
+    errors.push(`${relativePath(directory)}: ${formatError(error)}`);
     return;
   }
 
@@ -159,18 +172,19 @@ async function scanDirectory(
       continue;
     }
 
-    if (entry.isFile() && getLanguage(entryPath, options)) {
-      await measureFile(entryPath, options, files, errors);
+    const language = getLanguage(entryPath, options);
+    if (entry.isFile() && language) {
+      await measureFile(entryPath, language, files, errors);
     }
   }
 }
 
-async function measureFile(file: string, options: CliOptions, files: FileMetrics[], errors: string[]): Promise<void> {
-  const language = getLanguage(file, options);
-  if (!language) {
-    return;
-  }
-
+async function measureFile(
+  file: string,
+  language: LanguageName,
+  files: FileMetrics[],
+  errors: string[]
+): Promise<void> {
   try {
     const code = await readFile(file, 'utf8');
     files.push({
@@ -178,7 +192,7 @@ async function measureFile(file: string, options: CliOptions, files: FileMetrics
       metrics: measureCode(code, { language }),
     });
   } catch (error) {
-    errors.push(`${file}: ${formatError(error)}`);
+    errors.push(`${relativePath(file)}: ${formatError(error)}`);
   }
 }
 
@@ -204,7 +218,7 @@ function createRiskFinding(
   options: CliOptions
 ): RiskFinding {
   return {
-    file,
+    file: relativePath(file),
     language,
     name: fn.name ?? '<anonymous>',
     startLine: fn.startLine,
@@ -258,7 +272,7 @@ function printTextReport(target: string, result: ScanResult, risks: RiskFinding[
     writeStdout(`\nHigh-risk functions (top ${risks.length}):\n`);
     for (const risk of risks) {
       writeStdout(
-        `${relativePath(risk.file)}:${risk.startLine}-${risk.endLine} ${risk.name} ` +
+        `${risk.file}:${risk.startLine}-${risk.endLine} ${risk.name} ` +
           `(cyclomatic ${risk.cyclomaticComplexity}, cognitive ${risk.cognitiveComplexity})\n`
       );
     }
@@ -315,13 +329,19 @@ function shouldSkipDirectory(name: string, options: CliOptions): boolean {
   return testDirectoryNames.has(name);
 }
 
-function getLanguage(file: string, options: CliOptions): LanguageName | undefined {
+function getLanguage(file: string, options: CliOptions, explicitTarget = false): LanguageName | undefined {
   const lowerFile = file.toLowerCase();
-  if (lowerFile.endsWith('.d.ts') || lowerFile.endsWith('.min.js')) {
+  if (
+    !explicitTarget &&
+    (lowerFile.endsWith('.d.ts') ||
+      lowerFile.endsWith('.d.mts') ||
+      lowerFile.endsWith('.d.cts') ||
+      lowerFile.endsWith('.min.js'))
+  ) {
     return undefined;
   }
 
-  if (!options.includeTests && testFilePattern.test(path.basename(file))) {
+  if (!explicitTarget && !options.includeTests && testFilePattern.test(path.basename(file))) {
     return undefined;
   }
 
