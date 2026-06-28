@@ -131,7 +131,7 @@ export class TreeMeasurer {
     const functions = collectNodes(root, new Set(language.functionNodeTypes));
     const structuralMetrics = measureStructuralMetrics(root, functions, language);
     const functionMetrics = structuralMetrics.functions;
-    const globalComplexity = measureComplexity(root, language, 0);
+    const globalComplexity = measureComplexity(root, language, 0, false);
     const lines = measureLines(code, root);
     const halstead = measureHalstead(root, code);
 
@@ -199,7 +199,7 @@ function measureStructuralMetrics(
 }
 
 function analyzeFunction(node: Parser.SyntaxNode, language: LanguageDefinition): FunctionAnalysis {
-  const complexity = measureComplexity(node, language, 0);
+  const complexity = measureComplexity(node, language, 0, true);
   const calls = collectCalls(node, language);
   return {
     name: findFunctionName(node),
@@ -266,14 +266,24 @@ function measureCallGraph(analyses: FunctionAnalysis[]): {
   };
 }
 
-function measureComplexity(node: Parser.SyntaxNode, language: LanguageDefinition, nesting: number): ComplexityResult {
+function measureComplexity(
+  node: Parser.SyntaxNode,
+  language: LanguageDefinition,
+  nesting: number,
+  stopAtNestedFunctions: boolean
+): ComplexityResult {
   let cyclomaticComplexity = 1;
   let cognitiveComplexity = 0;
   let nestingDepth = nesting;
+  const functionNodes = new Set(language.functionNodeTypes);
   const decisionNodes = new Set(language.decisionNodeTypes);
   const nestingNodes = new Set(language.nestingNodeTypes);
 
-  function visit(current: Parser.SyntaxNode, currentNesting: number): void {
+  function visit(current: Parser.SyntaxNode, currentNesting: number, insideRoot: boolean): void {
+    if (stopAtNestedFunctions && !insideRoot && functionNodes.has(current.type)) {
+      return;
+    }
+
     const isDecision = decisionNodes.has(current.type);
     const isNesting = nestingNodes.has(current.type);
 
@@ -291,12 +301,12 @@ function measureComplexity(node: Parser.SyntaxNode, language: LanguageDefinition
     nestingDepth = Math.max(nestingDepth, childNesting);
 
     for (const child of current.children) {
-      visit(child, childNesting);
+      visit(child, childNesting, false);
     }
   }
 
   for (const child of node.children) {
-    visit(child, nesting);
+    visit(child, nesting, true);
   }
 
   return { cyclomaticComplexity, cognitiveComplexity, nestingDepth };
@@ -383,11 +393,16 @@ function returnsJsx(root: Parser.SyntaxNode, language: LanguageDefinition): bool
     }
 
     if (node.type === 'return_statement') {
-      return containsJsxExpression(node) || containsReactCreateElementCall(node);
+      return containsJsxExpression(node, functionNodeTypes) || containsReactCreateElementCall(node, functionNodeTypes);
     }
 
-    if (root.type === 'arrow_function' && node === getArrowFunctionBody(root) && node.type !== 'statement_block') {
-      return containsJsxExpression(node) || containsReactCreateElementCall(node);
+    if (
+      root.type === 'arrow_function' &&
+      node === getArrowFunctionBody(root) &&
+      node.type !== 'statement_block' &&
+      !functionNodeTypes.has(node.type)
+    ) {
+      return containsJsxExpression(node, functionNodeTypes) || containsReactCreateElementCall(node, functionNodeTypes);
     }
 
     for (const child of node.namedChildren) {
@@ -405,29 +420,37 @@ function getArrowFunctionBody(node: Parser.SyntaxNode): Parser.SyntaxNode | unde
   return node.childForFieldName('body') ?? node.namedChild(node.namedChildCount - 1) ?? undefined;
 }
 
-function containsJsxExpression(root: Parser.SyntaxNode): boolean {
-  return containsNode(root, (node) => node.type.startsWith('jsx_'));
+function containsJsxExpression(root: Parser.SyntaxNode, functionNodeTypes: Set<string>): boolean {
+  return containsNode(root, functionNodeTypes, (node) => node.type.startsWith('jsx_'));
 }
 
-function containsReactCreateElementCall(root: Parser.SyntaxNode): boolean {
-  return containsNode(root, isReactCreateElementCall);
+function containsReactCreateElementCall(root: Parser.SyntaxNode, functionNodeTypes: Set<string>): boolean {
+  return containsNode(root, functionNodeTypes, isReactCreateElementCall);
 }
 
-function containsNode(root: Parser.SyntaxNode, predicate: (node: Parser.SyntaxNode) => boolean): boolean {
-  function visit(node: Parser.SyntaxNode): boolean {
+function containsNode(
+  root: Parser.SyntaxNode,
+  functionNodeTypes: Set<string>,
+  predicate: (node: Parser.SyntaxNode) => boolean
+): boolean {
+  function visit(node: Parser.SyntaxNode, insideRoot: boolean): boolean {
+    if (!insideRoot && functionNodeTypes.has(node.type) && node.parent?.type !== 'arguments') {
+      return false;
+    }
+
     if (predicate(node)) {
       return true;
     }
 
     for (const child of node.namedChildren) {
-      if (visit(child)) {
+      if (visit(child, false)) {
         return true;
       }
     }
     return false;
   }
 
-  return visit(root);
+  return visit(root, true);
 }
 
 function measureCoupling(root: Parser.SyntaxNode, language: LanguageDefinition): CouplingMetrics {
