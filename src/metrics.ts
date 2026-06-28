@@ -383,11 +383,11 @@ function returnsJsx(root: Parser.SyntaxNode, language: LanguageDefinition): bool
     }
 
     if (node.type === 'return_statement') {
-      return containsJsxExpression(node, functionNodeTypes) || containsReactCreateElementCall(node, functionNodeTypes);
+      return containsJsxExpression(node) || containsReactCreateElementCall(node);
     }
 
     if (root.type === 'arrow_function' && node === getArrowFunctionBody(root) && node.type !== 'statement_block') {
-      return containsJsxExpression(node, functionNodeTypes) || containsReactCreateElementCall(node, functionNodeTypes);
+      return containsJsxExpression(node) || containsReactCreateElementCall(node);
     }
 
     for (const child of node.namedChildren) {
@@ -405,53 +405,41 @@ function getArrowFunctionBody(node: Parser.SyntaxNode): Parser.SyntaxNode | unde
   return node.childForFieldName('body') ?? node.namedChild(node.namedChildCount - 1) ?? undefined;
 }
 
-function containsJsxExpression(root: Parser.SyntaxNode, functionNodeTypes: Set<string>): boolean {
-  return containsNode(root, functionNodeTypes, (node) => node.type.startsWith('jsx_'));
+function containsJsxExpression(root: Parser.SyntaxNode): boolean {
+  return containsNode(root, (node) => node.type.startsWith('jsx_'));
 }
 
-function containsReactCreateElementCall(root: Parser.SyntaxNode, functionNodeTypes: Set<string>): boolean {
-  return containsNode(root, functionNodeTypes, isReactCreateElementCall);
+function containsReactCreateElementCall(root: Parser.SyntaxNode): boolean {
+  return containsNode(root, isReactCreateElementCall);
 }
 
-function containsNode(
-  root: Parser.SyntaxNode,
-  functionNodeTypes: Set<string>,
-  predicate: (node: Parser.SyntaxNode) => boolean
-): boolean {
-  function visit(node: Parser.SyntaxNode, insideRoot: boolean): boolean {
-    if (!insideRoot && functionNodeTypes.has(node.type)) {
-      return false;
-    }
-
+function containsNode(root: Parser.SyntaxNode, predicate: (node: Parser.SyntaxNode) => boolean): boolean {
+  function visit(node: Parser.SyntaxNode): boolean {
     if (predicate(node)) {
       return true;
     }
 
     for (const child of node.namedChildren) {
-      if (visit(child, false)) {
+      if (visit(child)) {
         return true;
       }
     }
     return false;
   }
 
-  return visit(root, true);
+  return visit(root);
 }
 
 function measureCoupling(root: Parser.SyntaxNode, language: LanguageDefinition): CouplingMetrics {
   const importSources = new Set<string>();
   let importCount = 0;
   let exportCount = 0;
-  let relativeImportCount = 0;
 
   function visit(node: Parser.SyntaxNode): void {
     if (isImportNode(node)) {
       importCount += 1;
       for (const source of findImportSources(node, language)) {
         importSources.add(source);
-        if (source.startsWith('.') || source.startsWith('/')) {
-          relativeImportCount += 1;
-        }
       }
     }
 
@@ -465,6 +453,8 @@ function measureCoupling(root: Parser.SyntaxNode, language: LanguageDefinition):
   }
 
   visit(root);
+
+  const relativeImportCount = [...importSources].filter(isRelativeImportSource).length;
 
   return {
     importCount,
@@ -717,19 +707,27 @@ function findFunctionName(node: Parser.SyntaxNode): string | undefined {
 }
 
 function findWrappedComponentName(node: Parser.SyntaxNode): string | undefined {
-  const argumentsNode = node.parent;
-  const callNode = argumentsNode?.parent;
-  const declaratorNode = callNode?.parent;
-  if (
-    argumentsNode?.type !== 'arguments' ||
-    callNode?.type !== 'call_expression' ||
-    declaratorNode?.type !== 'variable_declarator' ||
-    !isReactComponentWrapperCall(callNode)
-  ) {
-    return undefined;
+  let current: Parser.SyntaxNode | undefined = node;
+  while (current) {
+    const argumentsNode: Parser.SyntaxNode | null = current.parent;
+    const callNode: Parser.SyntaxNode | null | undefined = argumentsNode?.parent;
+    if (argumentsNode?.type !== 'arguments' || callNode?.type !== 'call_expression') {
+      return undefined;
+    }
+
+    if (!isReactComponentWrapperCall(callNode)) {
+      return undefined;
+    }
+
+    const declaratorNode = callNode.parent;
+    if (declaratorNode?.type === 'variable_declarator') {
+      return declaratorNode.childForFieldName('name')?.text;
+    }
+
+    current = callNode;
   }
 
-  return declaratorNode.childForFieldName('name')?.text;
+  return undefined;
 }
 
 function isReactComponentWrapperCall(node: Parser.SyntaxNode): boolean {
@@ -807,8 +805,12 @@ function findImportSources(node: Parser.SyntaxNode, language: LanguageDefinition
     }
   }
 
-  const sourceNode = findFirstStringNode(node);
+  const sourceNode = node.childForFieldName('source') ?? findFirstStringNode(node);
   return sourceNode ? [unquote(sourceNode.text)] : [];
+}
+
+function isRelativeImportSource(source: string): boolean {
+  return source.startsWith('.') || source.startsWith('/');
 }
 
 function findPythonImportSources(node: Parser.SyntaxNode): string[] {
