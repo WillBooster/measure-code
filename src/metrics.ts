@@ -200,7 +200,7 @@ function measureStructuralMetrics(
 
 function analyzeFunction(node: Parser.SyntaxNode, language: LanguageDefinition): FunctionAnalysis {
   const complexity = measureComplexity(node, language, 0);
-  const calls = collectCalls(node);
+  const calls = collectCalls(node, language);
   return {
     name: findFunctionName(node),
     startLine: node.startPosition.row + 1,
@@ -310,11 +310,19 @@ function isBooleanOperator(node: Parser.SyntaxNode): boolean {
   return booleanOperators.has(node.text);
 }
 
-function collectCalls(root: Parser.SyntaxNode): { callCount: number; callees: Set<string> } {
+function collectCalls(
+  root: Parser.SyntaxNode,
+  language: LanguageDefinition
+): { callCount: number; callees: Set<string> } {
   const callees = new Set<string>();
+  const functionNodeTypes = new Set(language.functionNodeTypes);
   let callCount = 0;
 
-  function visit(node: Parser.SyntaxNode): void {
+  function visit(node: Parser.SyntaxNode, insideRoot: boolean): void {
+    if (!insideRoot && functionNodeTypes.has(node.type)) {
+      return;
+    }
+
     if (isCallNode(node)) {
       callCount += 1;
       const callee = findCalleeName(node);
@@ -324,11 +332,11 @@ function collectCalls(root: Parser.SyntaxNode): { callCount: number; callees: Se
     }
 
     for (const child of node.namedChildren) {
-      visit(child);
+      visit(child, false);
     }
   }
 
-  visit(root);
+  visit(root, true);
   return { callCount, callees };
 }
 
@@ -689,14 +697,14 @@ function measureHalstead(root: Parser.SyntaxNode, code: string): HalsteadMetrics
 }
 
 function findFunctionName(node: Parser.SyntaxNode): string | undefined {
-  const nameNode = node.childForFieldName('name');
-  if (nameNode) {
-    return nameNode.text;
-  }
-
   const wrappedName = findWrappedComponentName(node);
   if (wrappedName) {
     return wrappedName;
+  }
+
+  const nameNode = node.childForFieldName('name');
+  if (nameNode) {
+    return nameNode.text;
   }
 
   const parent = node.parent;
