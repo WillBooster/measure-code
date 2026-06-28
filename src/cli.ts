@@ -9,10 +9,15 @@ import type { CodeMetrics, FunctionMetrics, LanguageName } from './types.js';
 
 interface CliOptions {
   cognitiveThreshold: number;
+  componentLocThreshold: number;
   cyclomaticThreshold: number;
+  fanOutThreshold: number;
   failOnError?: boolean;
   failOnRisk?: boolean;
+  fileLocThreshold: number;
   includeTests?: boolean;
+  importThreshold: number;
+  functionLocThreshold: number;
   json?: boolean;
   maxFindings: number;
 }
@@ -22,15 +27,24 @@ interface FileMetrics {
   metrics: CodeMetrics;
 }
 
+interface RiskTrigger {
+  metric: string;
+  score: number;
+  threshold: number;
+  value: number;
+}
+
 interface RiskFinding {
   cognitiveComplexity: number;
   cyclomaticComplexity: number;
-  endLine: number;
+  endLine?: number;
   file: string;
+  kind: 'component' | 'file' | 'function';
   language: LanguageName;
-  name: string;
+  name?: string;
   score: number;
-  startLine: number;
+  startLine?: number;
+  triggers: RiskTrigger[];
 }
 
 interface ScanResult {
@@ -85,8 +99,18 @@ async function main(): Promise<void> {
     .name('measure-code')
     .description('Measure code metrics and list high-risk functions.')
     .argument('[target]', 'file or directory to measure', '.')
-    .option('--cyclomatic-threshold <number>', 'minimum cyclomatic complexity to report', parsePositiveInteger, 10)
     .option('--cognitive-threshold <number>', 'minimum cognitive complexity to report', parsePositiveInteger, 15)
+    .option('--cyclomatic-threshold <number>', 'minimum cyclomatic complexity to report', parsePositiveInteger, 20)
+    .option('--function-loc-threshold <number>', 'minimum function LOC to report', parsePositiveInteger, 80)
+    .option('--component-loc-threshold <number>', 'minimum React component LOC to report', parsePositiveInteger, 250)
+    .option('--file-loc-threshold <number>', 'minimum file LOC to report', parsePositiveInteger, 300)
+    .option('--import-threshold <number>', 'minimum unique import sources per file to report', parsePositiveInteger, 20)
+    .option(
+      '--fan-out-threshold <number>',
+      'minimum intra-file fan-out per function to report',
+      parsePositiveInteger,
+      8
+    )
     .option('--max-findings <number>', 'maximum number of risk findings to print', parsePositiveInteger, 20)
     .option('--include-tests', 'include test files and test directories')
     .option('--json', 'print JSON output')
@@ -324,40 +348,98 @@ async function measureFile(
 }
 
 function findRiskyFunctions(files: FileMetrics[], options: CliOptions, displayRoot: string): RiskFinding[] {
-  const findings = files.flatMap(({ file, metrics }) =>
-    metrics.functions
-      .filter((fn) => isRiskyFunction(fn, options))
-      .map((fn) => createRiskFinding(file, metrics.language, fn, options, displayRoot))
-  );
+  const findings = files.flatMap(({ file, metrics }) => [
+    ...findRiskyFileMetrics(file, metrics, options, displayRoot),
+    ...metrics.functions.flatMap((fn) => findRiskyFunctionMetrics(file, metrics.language, fn, options, displayRoot)),
+  ]);
 
-  findings.sort((left, right) => right.score - left.score || right.cyclomaticComplexity - left.cyclomaticComplexity);
+  findings.sort((left, right) => right.score - left.score || maxTriggerValue(right) - maxTriggerValue(left));
   return findings;
 }
 
-function isRiskyFunction(fn: FunctionMetrics, options: CliOptions): boolean {
-  return fn.cyclomaticComplexity >= options.cyclomaticThreshold || fn.cognitiveComplexity >= options.cognitiveThreshold;
+function findRiskyFileMetrics(
+  file: string,
+  metrics: CodeMetrics,
+  options: CliOptions,
+  displayRoot: string
+): RiskFinding[] {
+  const triggers: RiskTrigger[] = [];
+  const formattedFile = formatPath(file, displayRoot);
+  addTrigger(triggers, 'file LOC', metrics.lines.code, options.fileLocThreshold);
+  addTrigger(triggers, 'import sources', metrics.coupling.importSourceCount, options.importThreshold);
+  if (triggers.length === 0) {
+    return [];
+  }
+
+  return [
+    {
+      file: formattedFile,
+      language: metrics.language,
+      kind: 'file',
+      cyclomaticComplexity: metrics.maxCyclomaticComplexity,
+      cognitiveComplexity: metrics.maxCognitiveComplexity,
+      triggers,
+      score: maxTriggerScore(triggers),
+    },
+  ];
 }
 
-function createRiskFinding(
+function findRiskyFunctionMetrics(
   file: string,
   language: LanguageName,
   fn: FunctionMetrics,
   options: CliOptions,
   displayRoot: string
-): RiskFinding {
-  return {
-    file: formatPath(file, displayRoot),
-    language,
-    name: fn.name ?? '<anonymous>',
-    startLine: fn.startLine,
-    endLine: fn.endLine,
-    cyclomaticComplexity: fn.cyclomaticComplexity,
-    cognitiveComplexity: fn.cognitiveComplexity,
-    score: Math.max(
-      fn.cyclomaticComplexity / options.cyclomaticThreshold,
-      fn.cognitiveComplexity / options.cognitiveThreshold
-    ),
-  };
+): RiskFinding[] {
+  const loc = fn.endLine - fn.startLine + 1;
+  const isComponent = isReactComponent(language, fn);
+  const kind = isComponent ? 'component' : 'function';
+  const triggers: RiskTrigger[] = [];
+  addTrigger(triggers, 'cognitive complexity', fn.cognitiveComplexity, options.cognitiveThreshold);
+  addTrigger(triggers, 'cyclomatic complexity', fn.cyclomaticComplexity, options.cyclomaticThreshold);
+  addTrigger(triggers, 'function LOC', loc, options.functionLocThreshold);
+  addTrigger(triggers, 'fan-out', fn.fanOut, options.fanOutThreshold);
+  if (isComponent) {
+    addTrigger(triggers, 'component LOC', loc, options.componentLocThreshold);
+  }
+  if (triggers.length === 0) {
+    return [];
+  }
+
+  return [
+    {
+      file: formatPath(file, displayRoot),
+      language,
+      kind,
+      name: fn.name ?? '<anonymous>',
+      startLine: fn.startLine,
+      endLine: fn.endLine,
+      cyclomaticComplexity: fn.cyclomaticComplexity,
+      cognitiveComplexity: fn.cognitiveComplexity,
+      triggers,
+      score: maxTriggerScore(triggers),
+    },
+  ];
+}
+
+function addTrigger(triggers: RiskTrigger[], metric: string, value: number, threshold: number): void {
+  if (value < threshold) {
+    return;
+  }
+
+  triggers.push({ metric, value, threshold, score: value / threshold });
+}
+
+function isReactComponent(language: LanguageName, fn: FunctionMetrics): boolean {
+  return (language === 'jsx' || language === 'tsx') && fn.name !== undefined && /^[A-Z]/u.test(fn.name);
+}
+
+function maxTriggerScore(triggers: RiskTrigger[]): number {
+  return Math.max(...triggers.map((trigger) => trigger.score));
+}
+
+function maxTriggerValue(finding: RiskFinding): number {
+  return Math.max(...finding.triggers.map((trigger) => trigger.value));
 }
 
 function printJson(result: ScanResult, risks: RiskFinding[], options: CliOptions): void {
@@ -370,6 +452,11 @@ function printJson(result: ScanResult, risks: RiskFinding[], options: CliOptions
         thresholds: {
           cyclomaticComplexity: options.cyclomaticThreshold,
           cognitiveComplexity: options.cognitiveThreshold,
+          componentLoc: options.componentLocThreshold,
+          fanOut: options.fanOutThreshold,
+          fileLoc: options.fileLocThreshold,
+          functionLoc: options.functionLocThreshold,
+          importSources: options.importThreshold,
         },
         totalRisks: risks.length,
         truncated: reportedRisks.length < risks.length,
@@ -400,7 +487,7 @@ function printTextReport(target: string, result: ScanResult, risks: RiskFinding[
     `Type annotations ${summary.typeAnnotationCount}, type aliases ${summary.typeAliasCount}, interfaces ${summary.interfaceCount}, avg cohesion ${summary.averageFunctionIdentifierOverlap.toFixed(2)}\n`
   );
   writeStdout(
-    `Risk thresholds: cyclomatic >= ${options.cyclomaticThreshold}, cognitive >= ${options.cognitiveThreshold}\n`
+    `Risk thresholds: file LOC >= ${options.fileLocThreshold}, function LOC >= ${options.functionLocThreshold}, component LOC >= ${options.componentLocThreshold}, cognitive >= ${options.cognitiveThreshold}, cyclomatic >= ${options.cyclomaticThreshold}, imports >= ${options.importThreshold}, fan-out >= ${options.fanOutThreshold}\n`
   );
 
   if (risks.length === 0) {
@@ -408,12 +495,9 @@ function printTextReport(target: string, result: ScanResult, risks: RiskFinding[
   } else {
     const reportedRisks = risks.slice(0, options.maxFindings);
     const totalSuffix = risks.length > reportedRisks.length ? ` of ${risks.length}` : '';
-    writeStdout(`\nHigh-risk functions (top ${reportedRisks.length}${totalSuffix}):\n`);
+    writeStdout(`\nHigh-risk findings (top ${reportedRisks.length}${totalSuffix}):\n`);
     for (const risk of reportedRisks) {
-      writeStdout(
-        `${risk.file}:${risk.startLine}-${risk.endLine} ${risk.name} ` +
-          `(cyclomatic ${risk.cyclomaticComplexity}, cognitive ${risk.cognitiveComplexity})\n`
-      );
+      writeStdout(`${formatRiskLocation(risk)} ${formatRiskName(risk)} ${formatRiskMetrics(risk)}\n`);
     }
   }
 
@@ -426,6 +510,29 @@ function printTextReport(target: string, result: ScanResult, risks: RiskFinding[
       writeStderr(`- ... ${result.errors.length - 10} more\n`);
     }
   }
+}
+
+function formatRiskLocation(risk: RiskFinding): string {
+  return risk.startLine === undefined || risk.endLine === undefined
+    ? risk.file
+    : `${risk.file}:${risk.startLine}-${risk.endLine}`;
+}
+
+function formatRiskName(risk: RiskFinding): string {
+  return risk.name ? `${risk.kind} ${risk.name}` : risk.kind;
+}
+
+function formatRiskMetrics(risk: RiskFinding): string {
+  const triggerText = risk.triggers
+    .map(
+      (trigger) => `${trigger.metric} ${formatMetricValue(trigger.value)} >= ${formatMetricValue(trigger.threshold)}`
+    )
+    .join(', ');
+  return `(${triggerText}; cyclomatic ${risk.cyclomaticComplexity}, cognitive ${risk.cognitiveComplexity})`;
+}
+
+function formatMetricValue(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(2);
 }
 
 function summarize(files: FileMetrics[]): {
