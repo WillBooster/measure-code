@@ -105,7 +105,7 @@ void main().catch((error: unknown) => {
 async function main(): Promise<void> {
   const program = new Command()
     .name('measure-code')
-    .description('Measure code metrics and list high-risk functions.')
+    .description('Measure code metrics and list high-risk findings.')
     .argument('[target]', 'file or directory to measure', '.')
     .option('--cognitive-threshold <number>', 'minimum cognitive complexity to report', parsePositiveInteger, 15)
     .option('--cyclomatic-threshold <number>', 'minimum cyclomatic complexity to report', parsePositiveInteger, 20)
@@ -124,7 +124,7 @@ async function main(): Promise<void> {
     .option('--include-tests', 'include test files and test directories')
     .option('--json', 'print JSON output')
     .option('--fail-on-error', 'exit with code 1 when files or directories cannot be scanned')
-    .option('--fail-on-risk', 'exit with code 1 when high-risk functions are found');
+    .option('--fail-on-risk', 'exit with code 1 when high-risk findings are found');
 
   program.action(async (target: string, options: CliOptions) => {
     const resolvedTarget = resolveTarget(target);
@@ -362,7 +362,7 @@ function findRiskyFunctions(files: FileMetrics[], options: CliOptions, displayRo
     ...metrics.functions.flatMap((fn) => findRiskyFunctionMetrics(file, metrics.language, fn, options, displayRoot)),
   ]);
 
-  findings.sort((left, right) => right.score - left.score || maxTriggerValue(right) - maxTriggerValue(left));
+  findings.sort(compareRiskFindings);
   return findings;
 }
 
@@ -385,8 +385,8 @@ function findRiskyFileMetrics(
       file: formattedFile,
       language: metrics.language,
       kind: 'file',
-      cyclomaticComplexity: metrics.maxCyclomaticComplexity,
-      cognitiveComplexity: metrics.maxCognitiveComplexity,
+      cyclomaticComplexity: metrics.cyclomaticComplexity,
+      cognitiveComplexity: metrics.cognitiveComplexity,
       triggers,
       score: maxTriggerScore(triggers),
     },
@@ -406,12 +406,9 @@ function findRiskyFunctionMetrics(
   const triggers: RiskTrigger[] = [];
   addTrigger(triggers, 'cognitive complexity', fn.cognitiveComplexity, options.cognitiveThreshold);
   addTrigger(triggers, 'cyclomatic complexity', fn.cyclomaticComplexity, options.cyclomaticThreshold);
-  addTrigger(triggers, 'function LOC', loc, options.functionLocThreshold);
+  addTrigger(triggers, isComponent ? 'component LOC' : 'function LOC', loc, getLocThreshold(isComponent, options));
   addTrigger(triggers, 'function calls', fn.callCount, options.callThreshold);
   addTrigger(triggers, 'fan-out', fn.fanOut, options.fanOutThreshold);
-  if (isComponent) {
-    addTrigger(triggers, 'component LOC', loc, options.componentLocThreshold);
-  }
   if (triggers.length === 0) {
     return [];
   }
@@ -444,12 +441,22 @@ function isReactComponent(language: LanguageName, fn: FunctionMetrics): boolean 
   return (language === 'jsx' || language === 'tsx') && fn.name !== undefined && /^[A-Z]/u.test(fn.name);
 }
 
+function getLocThreshold(isComponent: boolean, options: CliOptions): number {
+  return isComponent ? options.componentLocThreshold : options.functionLocThreshold;
+}
+
 function maxTriggerScore(triggers: RiskTrigger[]): number {
   return Math.max(...triggers.map((trigger) => trigger.score));
 }
 
-function maxTriggerValue(finding: RiskFinding): number {
-  return Math.max(...finding.triggers.map((trigger) => trigger.value));
+function compareRiskFindings(left: RiskFinding, right: RiskFinding): number {
+  return (
+    right.score - left.score ||
+    left.file.localeCompare(right.file) ||
+    (left.startLine ?? 0) - (right.startLine ?? 0) ||
+    (left.endLine ?? 0) - (right.endLine ?? 0) ||
+    left.kind.localeCompare(right.kind)
+  );
 }
 
 function printJson(result: ScanResult, risks: RiskFinding[], options: CliOptions): void {
@@ -502,7 +509,7 @@ function printTextReport(target: string, result: ScanResult, risks: RiskFinding[
   );
 
   if (risks.length === 0) {
-    writeStdout('No high-risk functions found.\n');
+    writeStdout('No high-risk findings found.\n');
   } else {
     const reportedRisks = risks.slice(0, options.maxFindings);
     const totalSuffix = risks.length > reportedRisks.length ? ` of ${risks.length}` : '';
