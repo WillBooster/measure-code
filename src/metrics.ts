@@ -192,7 +192,7 @@ function measureStructuralMetrics(
   return {
     functions: functionsWithGraph,
     callGraph: callGraph.metrics,
-    coupling: measureCoupling(root),
+    coupling: measureCoupling(root, language),
     cohesion: measureCohesion(analyses),
     typeComplexity: measureTypeComplexity(root),
   };
@@ -378,7 +378,7 @@ function returnsJsx(root: Parser.SyntaxNode, language: LanguageDefinition): bool
       return containsJsxExpression(node, functionNodeTypes) || containsReactCreateElementCall(node, functionNodeTypes);
     }
 
-    if (root.type === 'arrow_function' && node === getArrowFunctionBody(root)) {
+    if (root.type === 'arrow_function' && node === getArrowFunctionBody(root) && node.type !== 'statement_block') {
       return containsJsxExpression(node, functionNodeTypes) || containsReactCreateElementCall(node, functionNodeTypes);
     }
 
@@ -430,7 +430,7 @@ function containsNode(
   return visit(root, true);
 }
 
-function measureCoupling(root: Parser.SyntaxNode): CouplingMetrics {
+function measureCoupling(root: Parser.SyntaxNode, language: LanguageDefinition): CouplingMetrics {
   const importSources = new Set<string>();
   let importCount = 0;
   let exportCount = 0;
@@ -439,7 +439,7 @@ function measureCoupling(root: Parser.SyntaxNode): CouplingMetrics {
   function visit(node: Parser.SyntaxNode): void {
     if (isImportNode(node)) {
       importCount += 1;
-      for (const source of findImportSources(node)) {
+      for (const source of findImportSources(node, language)) {
         importSources.add(source);
         if (source.startsWith('.') || source.startsWith('/')) {
           relativeImportCount += 1;
@@ -694,6 +694,11 @@ function findFunctionName(node: Parser.SyntaxNode): string | undefined {
     return nameNode.text;
   }
 
+  const wrappedName = findWrappedComponentName(node);
+  if (wrappedName) {
+    return wrappedName;
+  }
+
   const parent = node.parent;
   if (!parent) {
     return undefined;
@@ -701,6 +706,32 @@ function findFunctionName(node: Parser.SyntaxNode): string | undefined {
 
   const parentName = parent.childForFieldName('name');
   return parentName?.text;
+}
+
+function findWrappedComponentName(node: Parser.SyntaxNode): string | undefined {
+  const argumentsNode = node.parent;
+  const callNode = argumentsNode?.parent;
+  const declaratorNode = callNode?.parent;
+  if (
+    argumentsNode?.type !== 'arguments' ||
+    callNode?.type !== 'call_expression' ||
+    declaratorNode?.type !== 'variable_declarator' ||
+    !isReactComponentWrapperCall(callNode)
+  ) {
+    return undefined;
+  }
+
+  return declaratorNode.childForFieldName('name')?.text;
+}
+
+function isReactComponentWrapperCall(node: Parser.SyntaxNode): boolean {
+  const calleeNode = node.childForFieldName('function') ?? node.namedChild(0);
+  return (
+    calleeNode?.text === 'memo' ||
+    calleeNode?.text === 'React.memo' ||
+    calleeNode?.text === 'forwardRef' ||
+    calleeNode?.text === 'React.forwardRef'
+  );
 }
 
 function isCallNode(node: Parser.SyntaxNode): boolean {
@@ -760,10 +791,12 @@ function isImportNode(node: Parser.SyntaxNode): boolean {
   );
 }
 
-function findImportSources(node: Parser.SyntaxNode): string[] {
-  const pythonSources = findPythonImportSources(node);
-  if (pythonSources.length > 0) {
-    return pythonSources;
+function findImportSources(node: Parser.SyntaxNode, language: LanguageDefinition): string[] {
+  if (language.name === 'python') {
+    const pythonSources = findPythonImportSources(node);
+    if (pythonSources.length > 0) {
+      return pythonSources;
+    }
   }
 
   const sourceNode = findFirstStringNode(node);
