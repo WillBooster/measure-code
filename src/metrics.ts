@@ -222,7 +222,7 @@ function measureCallGraph(analyses: FunctionAnalysis[]): {
   metrics: CallGraphMetrics;
   recursiveIndexes: Set<number>;
 } {
-  const indexesByName = mapFunctionIndexesByName(analyses);
+  const indexesByName = mapUniqueFunctionIndexesByName(analyses);
   const functionNames = new Set(indexesByName.keys());
   const fanInByIndex = new Map<number, number>();
   const fanOutByIndex = new Map<number, number>();
@@ -240,7 +240,8 @@ function measureCallGraph(analyses: FunctionAnalysis[]): {
     const internalCalleeNames = new Set([...analysis.callees].filter((callee) => functionNames.has(callee)));
     const internalCalleeIndexes = new Set<number>();
     for (const callee of internalCalleeNames) {
-      for (const calleeIndex of indexesByName.get(callee) ?? []) {
+      const calleeIndex = indexesByName.get(callee);
+      if (calleeIndex !== undefined) {
         internalCalleeIndexes.add(calleeIndex);
       }
     }
@@ -272,18 +273,16 @@ function measureCallGraph(analyses: FunctionAnalysis[]): {
   };
 }
 
-function mapFunctionIndexesByName(analyses: FunctionAnalysis[]): Map<string, number[]> {
-  const indexesByName = new Map<string, number[]>();
+function mapUniqueFunctionIndexesByName(analyses: FunctionAnalysis[]): Map<string, number> {
+  const indexesByName = new Map<string, number | undefined>();
   for (const analysis of analyses) {
     if (!analysis.name) {
       continue;
     }
 
-    const indexes = indexesByName.get(analysis.name) ?? [];
-    indexes.push(analysis.index);
-    indexesByName.set(analysis.name, indexes);
+    indexesByName.set(analysis.name, indexesByName.has(analysis.name) ? undefined : analysis.index);
   }
-  return indexesByName;
+  return new Map([...indexesByName.entries()].filter((entry): entry is [string, number] => entry[1] !== undefined));
 }
 
 function measureComplexity(
@@ -508,11 +507,36 @@ function returnsJsxFromFunctionNode(root: Parser.SyntaxNode, functionNodeTypes: 
     return containsJsxExpression(body, functionNodeTypes) || containsReactCreateElementCall(body, functionNodeTypes);
   }
 
-  return root.namedChildren.some(
-    (child) =>
-      child.type === 'return_statement' &&
-      (containsJsxExpression(child, functionNodeTypes) || containsReactCreateElementCall(child, functionNodeTypes))
+  return containsOwnReturnNode(
+    root,
+    functionNodeTypes,
+    (node) => containsJsxExpression(node, functionNodeTypes) || containsReactCreateElementCall(node, functionNodeTypes)
   );
+}
+
+function containsOwnReturnNode(
+  root: Parser.SyntaxNode,
+  functionNodeTypes: Set<string>,
+  predicate: (node: Parser.SyntaxNode) => boolean
+): boolean {
+  function visit(node: Parser.SyntaxNode, insideRoot: boolean): boolean {
+    if (!insideRoot && functionNodeTypes.has(node.type)) {
+      return false;
+    }
+
+    if (node.type === 'return_statement' && predicate(node)) {
+      return true;
+    }
+
+    for (const child of node.namedChildren) {
+      if (visit(child, false)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  return visit(root, true);
 }
 
 function measureCoupling(root: Parser.SyntaxNode, language: LanguageDefinition): CouplingMetrics {
