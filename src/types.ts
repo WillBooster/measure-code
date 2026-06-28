@@ -43,6 +43,7 @@ export interface FunctionMetrics {
   name?: string;
   startLine: number;
   endLine: number;
+  returnsJsx: boolean;
   cyclomaticComplexity: number;
   cognitiveComplexity: number;
   callCount: number;
