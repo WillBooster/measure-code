@@ -8,6 +8,7 @@ import { measureCode } from './metrics.js';
 import type { CodeMetrics, FunctionMetrics, LanguageName } from './types.js';
 
 interface CliOptions {
+  callThreshold: number;
   cognitiveThreshold: number;
   componentLocThreshold: number;
   cyclomaticThreshold: number;
@@ -68,19 +69,26 @@ const languageByExtension = new Map<string, LanguageName>([
 ]);
 
 const ignoredDirectoryNames = new Set([
+  '.agents',
+  '.claude',
+  '.cursor',
   '.git',
   '.next',
+  '.playwright-cli',
   '.tox',
   '.tmp',
   '.turbo',
   '.venv',
   '.yarn',
+  '__fixtures__',
   '__generated__',
   '__pycache__',
   'coverage',
   'dist',
+  'fixtures',
   'generated',
   'node_modules',
+  'test-fixtures',
   'vendor',
   'venv',
 ]);
@@ -105,6 +113,7 @@ async function main(): Promise<void> {
     .option('--component-loc-threshold <number>', 'minimum React component LOC to report', parsePositiveInteger, 250)
     .option('--file-loc-threshold <number>', 'minimum file LOC to report', parsePositiveInteger, 300)
     .option('--import-threshold <number>', 'minimum unique import sources per file to report', parsePositiveInteger, 20)
+    .option('--call-threshold <number>', 'minimum function call count to report', parsePositiveInteger, 50)
     .option(
       '--fan-out-threshold <number>',
       'minimum intra-file fan-out per function to report',
@@ -398,6 +407,7 @@ function findRiskyFunctionMetrics(
   addTrigger(triggers, 'cognitive complexity', fn.cognitiveComplexity, options.cognitiveThreshold);
   addTrigger(triggers, 'cyclomatic complexity', fn.cyclomaticComplexity, options.cyclomaticThreshold);
   addTrigger(triggers, 'function LOC', loc, options.functionLocThreshold);
+  addTrigger(triggers, 'function calls', fn.callCount, options.callThreshold);
   addTrigger(triggers, 'fan-out', fn.fanOut, options.fanOutThreshold);
   if (isComponent) {
     addTrigger(triggers, 'component LOC', loc, options.componentLocThreshold);
@@ -452,6 +462,7 @@ function printJson(result: ScanResult, risks: RiskFinding[], options: CliOptions
         thresholds: {
           cyclomaticComplexity: options.cyclomaticThreshold,
           cognitiveComplexity: options.cognitiveThreshold,
+          callCount: options.callThreshold,
           componentLoc: options.componentLocThreshold,
           fanOut: options.fanOutThreshold,
           fileLoc: options.fileLocThreshold,
@@ -487,7 +498,7 @@ function printTextReport(target: string, result: ScanResult, risks: RiskFinding[
     `Type annotations ${summary.typeAnnotationCount}, type aliases ${summary.typeAliasCount}, interfaces ${summary.interfaceCount}, avg cohesion ${summary.averageFunctionIdentifierOverlap.toFixed(2)}\n`
   );
   writeStdout(
-    `Risk thresholds: file LOC >= ${options.fileLocThreshold}, function LOC >= ${options.functionLocThreshold}, component LOC >= ${options.componentLocThreshold}, cognitive >= ${options.cognitiveThreshold}, cyclomatic >= ${options.cyclomaticThreshold}, imports >= ${options.importThreshold}, fan-out >= ${options.fanOutThreshold}\n`
+    `Risk thresholds: file LOC >= ${options.fileLocThreshold}, function LOC >= ${options.functionLocThreshold}, component LOC >= ${options.componentLocThreshold}, cognitive >= ${options.cognitiveThreshold}, cyclomatic >= ${options.cyclomaticThreshold}, calls >= ${options.callThreshold}, imports >= ${options.importThreshold}, fan-out >= ${options.fanOutThreshold}\n`
   );
 
   if (risks.length === 0) {
@@ -635,7 +646,8 @@ function getLanguage(file: string, options: CliOptions, explicitTarget = false):
     (lowerFile.endsWith('.d.ts') ||
       lowerFile.endsWith('.d.mts') ||
       lowerFile.endsWith('.d.cts') ||
-      lowerFile.endsWith('.min.js'))
+      lowerFile.endsWith('.min.js') ||
+      lowerFile.endsWith('.pnp.cjs'))
   ) {
     return undefined;
   }
