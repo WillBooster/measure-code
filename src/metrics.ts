@@ -86,6 +86,7 @@ interface FunctionAnalysis {
   name?: string;
   startLine: number;
   endLine: number;
+  returnsJsx: boolean;
   cyclomaticComplexity: number;
   cognitiveComplexity: number;
   callCount: number;
@@ -178,6 +179,7 @@ function measureStructuralMetrics(
     name: analysis.name,
     startLine: analysis.startLine,
     endLine: analysis.endLine,
+    returnsJsx: analysis.returnsJsx,
     cyclomaticComplexity: analysis.cyclomaticComplexity,
     cognitiveComplexity: analysis.cognitiveComplexity,
     callCount: analysis.callCount,
@@ -203,6 +205,7 @@ function analyzeFunction(node: Parser.SyntaxNode, language: LanguageDefinition):
     name: findFunctionName(node),
     startLine: node.startPosition.row + 1,
     endLine: node.endPosition.row + 1,
+    returnsJsx: returnsJsx(node, language),
     cyclomaticComplexity: complexity.cyclomaticComplexity,
     cognitiveComplexity: complexity.cognitiveComplexity,
     callCount: calls.callCount,
@@ -363,6 +366,70 @@ function collectNodes(root: Parser.SyntaxNode, nodeTypes: Set<string>): Parser.S
   return nodes;
 }
 
+function returnsJsx(root: Parser.SyntaxNode, language: LanguageDefinition): boolean {
+  const functionNodeTypes = new Set(language.functionNodeTypes);
+
+  function visit(node: Parser.SyntaxNode, insideRoot: boolean): boolean {
+    if (!insideRoot && functionNodeTypes.has(node.type)) {
+      return false;
+    }
+
+    if (node.type === 'return_statement') {
+      return containsJsxExpression(node, functionNodeTypes) || containsReactCreateElementCall(node, functionNodeTypes);
+    }
+
+    if (root.type === 'arrow_function' && node === getArrowFunctionBody(root)) {
+      return containsJsxExpression(node, functionNodeTypes) || containsReactCreateElementCall(node, functionNodeTypes);
+    }
+
+    for (const child of node.namedChildren) {
+      if (visit(child, false)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  return visit(root, true);
+}
+
+function getArrowFunctionBody(node: Parser.SyntaxNode): Parser.SyntaxNode | undefined {
+  return node.childForFieldName('body') ?? node.namedChild(node.namedChildCount - 1) ?? undefined;
+}
+
+function containsJsxExpression(root: Parser.SyntaxNode, functionNodeTypes: Set<string>): boolean {
+  return containsNode(root, functionNodeTypes, (node) => node.type.startsWith('jsx_'));
+}
+
+function containsReactCreateElementCall(root: Parser.SyntaxNode, functionNodeTypes: Set<string>): boolean {
+  return containsNode(root, functionNodeTypes, isReactCreateElementCall);
+}
+
+function containsNode(
+  root: Parser.SyntaxNode,
+  functionNodeTypes: Set<string>,
+  predicate: (node: Parser.SyntaxNode) => boolean
+): boolean {
+  function visit(node: Parser.SyntaxNode, insideRoot: boolean): boolean {
+    if (!insideRoot && functionNodeTypes.has(node.type)) {
+      return false;
+    }
+
+    if (predicate(node)) {
+      return true;
+    }
+
+    for (const child of node.namedChildren) {
+      if (visit(child, false)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  return visit(root, true);
+}
+
 function measureCoupling(root: Parser.SyntaxNode): CouplingMetrics {
   const importSources = new Set<string>();
   let importCount = 0;
@@ -372,8 +439,7 @@ function measureCoupling(root: Parser.SyntaxNode): CouplingMetrics {
   function visit(node: Parser.SyntaxNode): void {
     if (isImportNode(node)) {
       importCount += 1;
-      const source = findImportSource(node);
-      if (source) {
+      for (const source of findImportSources(node)) {
         importSources.add(source);
         if (source.startsWith('.') || source.startsWith('/')) {
           relativeImportCount += 1;
@@ -675,6 +741,15 @@ function findRightmostIdentifier(node: Parser.SyntaxNode): string | undefined {
   return undefined;
 }
 
+function isReactCreateElementCall(node: Parser.SyntaxNode): boolean {
+  if (!isCallNode(node)) {
+    return false;
+  }
+
+  const calleeNode = node.childForFieldName('function') ?? node.namedChild(0);
+  return calleeNode?.text === 'React.createElement' || calleeNode?.text === 'createElement';
+}
+
 function isImportNode(node: Parser.SyntaxNode): boolean {
   return (
     node.type === 'import_statement' ||
@@ -685,9 +760,53 @@ function isImportNode(node: Parser.SyntaxNode): boolean {
   );
 }
 
-function findImportSource(node: Parser.SyntaxNode): string | undefined {
+function findImportSources(node: Parser.SyntaxNode): string[] {
+  const pythonSources = findPythonImportSources(node);
+  if (pythonSources.length > 0) {
+    return pythonSources;
+  }
+
   const sourceNode = findFirstStringNode(node);
-  return sourceNode ? unquote(sourceNode.text) : undefined;
+  return sourceNode ? [unquote(sourceNode.text)] : [];
+}
+
+function findPythonImportSources(node: Parser.SyntaxNode): string[] {
+  if (node.type === 'import_from_statement') {
+    const moduleNode = node.childForFieldName('module_name');
+    return moduleNode ? [normalizeImportSource(moduleNode.text)] : [];
+  }
+
+  if (node.type !== 'import_statement') {
+    return [];
+  }
+
+  return node.namedChildren
+    .map((child) => findPythonImportedModuleName(child))
+    .filter((source) => source !== undefined);
+}
+
+function findPythonImportedModuleName(node: Parser.SyntaxNode): string | undefined {
+  if (node.type === 'dotted_name' || node.type === 'relative_import') {
+    return normalizeImportSource(node.text);
+  }
+
+  const nameNode = node.childForFieldName('name');
+  if (nameNode) {
+    return normalizeImportSource(nameNode.text);
+  }
+
+  for (const child of node.namedChildren) {
+    const source = findPythonImportedModuleName(child);
+    if (source) {
+      return source;
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeImportSource(source: string): string {
+  return source.replaceAll(/\s+/gu, '');
 }
 
 function findFirstStringNode(node: Parser.SyntaxNode): Parser.SyntaxNode | undefined {

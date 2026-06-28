@@ -109,9 +109,19 @@ async function main(): Promise<void> {
     .argument('[target]', 'file or directory to measure', '.')
     .option('--cognitive-threshold <number>', 'minimum cognitive complexity to report', parsePositiveInteger, 15)
     .option('--cyclomatic-threshold <number>', 'minimum cyclomatic complexity to report', parsePositiveInteger, 20)
-    .option('--function-loc-threshold <number>', 'minimum function LOC to report', parsePositiveInteger, 80)
-    .option('--component-loc-threshold <number>', 'minimum React component LOC to report', parsePositiveInteger, 250)
-    .option('--file-loc-threshold <number>', 'minimum file LOC to report', parsePositiveInteger, 300)
+    .option(
+      '--function-loc-threshold <number>',
+      'minimum function physical LOC span to report',
+      parsePositiveInteger,
+      80
+    )
+    .option(
+      '--component-loc-threshold <number>',
+      'minimum React component physical LOC span to report',
+      parsePositiveInteger,
+      250
+    )
+    .option('--file-loc-threshold <number>', 'minimum file code LOC to report', parsePositiveInteger, 300)
     .option('--import-threshold <number>', 'minimum unique import sources per file to report', parsePositiveInteger, 20)
     .option('--call-threshold <number>', 'minimum function call count to report', parsePositiveInteger, 50)
     .option(
@@ -438,7 +448,9 @@ function addTrigger(triggers: RiskTrigger[], metric: string, value: number, thre
 }
 
 function isReactComponent(language: LanguageName, fn: FunctionMetrics): boolean {
-  return (language === 'jsx' || language === 'tsx') && fn.name !== undefined && /^[A-Z]/u.test(fn.name);
+  return (
+    (language === 'jsx' || language === 'tsx') && fn.returnsJsx && fn.name !== undefined && /^[A-Z]/u.test(fn.name)
+  );
 }
 
 function getLocThreshold(isComponent: boolean, options: CliOptions): number {
