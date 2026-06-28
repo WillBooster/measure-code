@@ -83,6 +83,7 @@ interface CommentSpan {
 }
 
 interface FunctionAnalysis {
+  index: number;
   name?: string;
   startLine: number;
   endLine: number;
@@ -173,7 +174,7 @@ function measureStructuralMetrics(
   functions: Parser.SyntaxNode[],
   language: LanguageDefinition
 ): StructuralMetrics {
-  const analyses = functions.map((node) => analyzeFunction(node, language));
+  const analyses = functions.map((node, index) => analyzeFunction(node, language, index));
   const callGraph = measureCallGraph(analyses);
   const functionsWithGraph = analyses.map((analysis) => ({
     name: analysis.name,
@@ -184,9 +185,9 @@ function measureStructuralMetrics(
     cognitiveComplexity: analysis.cognitiveComplexity,
     callCount: analysis.callCount,
     uniqueCalleeCount: analysis.callees.size,
-    fanIn: callGraph.fanInByName.get(analysis.name ?? '') ?? 0,
-    fanOut: callGraph.fanOutByName.get(analysis.name ?? '') ?? 0,
-    recursive: callGraph.recursiveNames.has(analysis.name ?? ''),
+    fanIn: callGraph.fanInByIndex.get(analysis.index) ?? 0,
+    fanOut: callGraph.fanOutByIndex.get(analysis.index) ?? 0,
+    recursive: callGraph.recursiveIndexes.has(analysis.index),
   }));
 
   return {
@@ -198,10 +199,11 @@ function measureStructuralMetrics(
   };
 }
 
-function analyzeFunction(node: Parser.SyntaxNode, language: LanguageDefinition): FunctionAnalysis {
+function analyzeFunction(node: Parser.SyntaxNode, language: LanguageDefinition, index: number): FunctionAnalysis {
   const complexity = measureComplexity(node, language, 0, true);
   const calls = collectCalls(node, language);
   return {
+    index,
     name: findFunctionName(node),
     startLine: node.startPosition.row + 1,
     endLine: node.endPosition.row + 1,
@@ -215,15 +217,16 @@ function analyzeFunction(node: Parser.SyntaxNode, language: LanguageDefinition):
 }
 
 function measureCallGraph(analyses: FunctionAnalysis[]): {
-  fanInByName: Map<string, number>;
-  fanOutByName: Map<string, number>;
+  fanInByIndex: Map<number, number>;
+  fanOutByIndex: Map<number, number>;
   metrics: CallGraphMetrics;
-  recursiveNames: Set<string>;
+  recursiveIndexes: Set<number>;
 } {
-  const functionNames = new Set(analyses.map((analysis) => analysis.name).filter((name) => name !== undefined));
-  const fanInByName = new Map<string, number>();
-  const fanOutByName = new Map<string, number>();
-  const graph = new Map<string, Set<string>>();
+  const indexesByName = mapFunctionIndexesByName(analyses);
+  const functionNames = new Set(indexesByName.keys());
+  const fanInByIndex = new Map<number, number>();
+  const fanOutByIndex = new Map<number, number>();
+  const graph = new Map<number, Set<number>>();
   let callCount = 0;
   let internalCallCount = 0;
   const allCallees = new Set<string>();
@@ -234,36 +237,53 @@ function measureCallGraph(analyses: FunctionAnalysis[]): {
       allCallees.add(callee);
     }
 
-    if (!analysis.name) {
-      continue;
+    const internalCalleeNames = new Set([...analysis.callees].filter((callee) => functionNames.has(callee)));
+    const internalCalleeIndexes = new Set<number>();
+    for (const callee of internalCalleeNames) {
+      for (const calleeIndex of indexesByName.get(callee) ?? []) {
+        internalCalleeIndexes.add(calleeIndex);
+      }
     }
 
-    const internalCallees = new Set([...analysis.callees].filter((callee) => functionNames.has(callee)));
-    graph.set(analysis.name, internalCallees);
-    fanOutByName.set(analysis.name, internalCallees.size);
-    for (const callee of internalCallees) {
-      fanInByName.set(callee, (fanInByName.get(callee) ?? 0) + 1);
-      internalCallCount += 1;
+    graph.set(analysis.index, internalCalleeIndexes);
+    fanOutByIndex.set(analysis.index, internalCalleeNames.size);
+    internalCallCount += internalCalleeNames.size;
+    for (const calleeIndex of internalCalleeIndexes) {
+      fanInByIndex.set(calleeIndex, (fanInByIndex.get(calleeIndex) ?? 0) + 1);
     }
   }
 
-  const recursiveNames = findRecursiveNames(graph);
+  const recursiveIndexes = findRecursiveIndexes(graph);
 
   return {
-    fanInByName,
-    fanOutByName,
-    recursiveNames,
+    fanInByIndex,
+    fanOutByIndex,
+    recursiveIndexes,
     metrics: {
       callCount,
       uniqueCalleeCount: allCallees.size,
       internalCallCount,
       internalEdgeCount: sum([...graph.values()].map((callees) => callees.size)),
-      recursiveFunctionCount: recursiveNames.size,
-      maxFanIn: maxMapValue(fanInByName),
-      maxFanOut: maxMapValue(fanOutByName),
+      recursiveFunctionCount: recursiveIndexes.size,
+      maxFanIn: maxMapValue(fanInByIndex),
+      maxFanOut: maxMapValue(fanOutByIndex),
       maxCallDepth: measureMaxCallDepth(graph),
     },
   };
+}
+
+function mapFunctionIndexesByName(analyses: FunctionAnalysis[]): Map<string, number[]> {
+  const indexesByName = new Map<string, number[]>();
+  for (const analysis of analyses) {
+    if (!analysis.name) {
+      continue;
+    }
+
+    const indexes = indexesByName.get(analysis.name) ?? [];
+    indexes.push(analysis.index);
+    indexesByName.set(analysis.name, indexes);
+  }
+  return indexesByName;
 }
 
 function measureComplexity(
@@ -306,7 +326,7 @@ function measureComplexity(
   }
 
   for (const child of node.children) {
-    visit(child, nesting, true);
+    visit(child, nesting, false);
   }
 
   return { cyclomaticComplexity, cognitiveComplexity, nestingDepth };
@@ -421,7 +441,11 @@ function getArrowFunctionBody(node: Parser.SyntaxNode): Parser.SyntaxNode | unde
 }
 
 function containsJsxExpression(root: Parser.SyntaxNode, functionNodeTypes: Set<string>): boolean {
-  return containsNode(root, functionNodeTypes, (node) => node.type.startsWith('jsx_'));
+  return containsNode(
+    root,
+    functionNodeTypes,
+    (node) => node.type.startsWith('jsx_') || isJsxMappingCall(node, functionNodeTypes)
+  );
 }
 
 function containsReactCreateElementCall(root: Parser.SyntaxNode, functionNodeTypes: Set<string>): boolean {
@@ -434,7 +458,7 @@ function containsNode(
   predicate: (node: Parser.SyntaxNode) => boolean
 ): boolean {
   function visit(node: Parser.SyntaxNode, insideRoot: boolean): boolean {
-    if (!insideRoot && functionNodeTypes.has(node.type) && node.parent?.type !== 'arguments') {
+    if (!insideRoot && functionNodeTypes.has(node.type)) {
       return false;
     }
 
@@ -451,6 +475,44 @@ function containsNode(
   }
 
   return visit(root, true);
+}
+
+function isJsxMappingCall(node: Parser.SyntaxNode, functionNodeTypes: Set<string>): boolean {
+  if (!isCallNode(node) || !isArrayMappingCallee(node.childForFieldName('function') ?? node.namedChild(0))) {
+    return false;
+  }
+
+  return node.namedChildren.some((child) => containsReturnedJsxFunction(child, functionNodeTypes));
+}
+
+function isArrayMappingCallee(node: Parser.SyntaxNode | null): boolean {
+  if (!node) {
+    return false;
+  }
+
+  const calleeName = findRightmostIdentifier(node);
+  return calleeName === 'map' || calleeName === 'flatMap';
+}
+
+function containsReturnedJsxFunction(root: Parser.SyntaxNode, functionNodeTypes: Set<string>): boolean {
+  if (functionNodeTypes.has(root.type)) {
+    return returnsJsxFromFunctionNode(root, functionNodeTypes);
+  }
+
+  return root.namedChildren.some((child) => containsReturnedJsxFunction(child, functionNodeTypes));
+}
+
+function returnsJsxFromFunctionNode(root: Parser.SyntaxNode, functionNodeTypes: Set<string>): boolean {
+  const body = root.type === 'arrow_function' ? getArrowFunctionBody(root) : undefined;
+  if (body && body.type !== 'statement_block' && !functionNodeTypes.has(body.type)) {
+    return containsJsxExpression(body, functionNodeTypes) || containsReactCreateElementCall(body, functionNodeTypes);
+  }
+
+  return root.namedChildren.some(
+    (child) =>
+      child.type === 'return_statement' &&
+      (containsJsxExpression(child, functionNodeTypes) || containsReactCreateElementCall(child, functionNodeTypes))
+  );
 }
 
 function measureCoupling(root: Parser.SyntaxNode, language: LanguageDefinition): CouplingMetrics {
@@ -898,19 +960,19 @@ function isExportNode(node: Parser.SyntaxNode): boolean {
   return node.type.startsWith('export') || node.type === 'public_field_definition';
 }
 
-function findRecursiveNames(graph: Map<string, Set<string>>): Set<string> {
-  const recursiveNames = new Set<string>();
+function findRecursiveIndexes(graph: Map<number, Set<number>>): Set<number> {
+  const recursiveIndexes = new Set<number>();
 
-  for (const name of graph.keys()) {
-    if (canReach(name, name, graph, new Set())) {
-      recursiveNames.add(name);
+  for (const index of graph.keys()) {
+    if (canReach(index, index, graph, new Set())) {
+      recursiveIndexes.add(index);
     }
   }
 
-  return recursiveNames;
+  return recursiveIndexes;
 }
 
-function canReach(start: string, target: string, graph: Map<string, Set<string>>, visited: Set<string>): boolean {
+function canReach(start: number, target: number, graph: Map<number, Set<number>>, visited: Set<number>): boolean {
   const callees = graph.get(start);
   if (!callees) {
     return false;
@@ -932,24 +994,24 @@ function canReach(start: string, target: string, graph: Map<string, Set<string>>
   return false;
 }
 
-function measureMaxCallDepth(graph: Map<string, Set<string>>): number {
+function measureMaxCallDepth(graph: Map<number, Set<number>>): number {
   let maxDepth = 0;
-  for (const name of graph.keys()) {
-    maxDepth = Math.max(maxDepth, measureCallDepth(name, graph, new Set()));
+  for (const index of graph.keys()) {
+    maxDepth = Math.max(maxDepth, measureCallDepth(index, graph, new Set()));
   }
   return maxDepth;
 }
 
-function measureCallDepth(name: string, graph: Map<string, Set<string>>, pathNames: Set<string>): number {
-  const callees = graph.get(name);
-  if (!callees || callees.size === 0 || pathNames.has(name)) {
+function measureCallDepth(index: number, graph: Map<number, Set<number>>, pathIndexes: Set<number>): number {
+  const callees = graph.get(index);
+  if (!callees || callees.size === 0 || pathIndexes.has(index)) {
     return 0;
   }
 
-  pathNames.add(name);
+  pathIndexes.add(index);
   let maxDepth = 0;
   for (const callee of callees) {
-    maxDepth = Math.max(maxDepth, 1 + measureCallDepth(callee, graph, new Set(pathNames)));
+    maxDepth = Math.max(maxDepth, 1 + measureCallDepth(callee, graph, new Set(pathIndexes)));
   }
   return maxDepth;
 }
@@ -981,7 +1043,7 @@ function maxMetric(functions: FunctionMetrics[], key: 'cyclomaticComplexity' | '
   return functions.length === 0 ? 0 : Math.max(...functions.map((fn) => fn[key]));
 }
 
-function maxMapValue(map: Map<string, number>): number {
+function maxMapValue(map: Map<unknown, number>): number {
   let maximum = 0;
   for (const value of map.values()) {
     maximum = Math.max(maximum, value);

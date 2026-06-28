@@ -448,9 +448,11 @@ function addTrigger(triggers: RiskTrigger[], metric: string, value: number, thre
 }
 
 function isReactComponent(language: LanguageName, fn: FunctionMetrics): boolean {
-  return (
-    (language === 'jsx' || language === 'tsx') && fn.returnsJsx && fn.name !== undefined && /^[A-Z]/u.test(fn.name)
-  );
+  return isJavaScriptLikeLanguage(language) && fn.returnsJsx && fn.name !== undefined && /^[A-Z]/u.test(fn.name);
+}
+
+function isJavaScriptLikeLanguage(language: LanguageName): boolean {
+  return language === 'javascript' || language === 'jsx' || language === 'typescript' || language === 'tsx';
 }
 
 function getLocThreshold(isComponent: boolean, options: CliOptions): number {
