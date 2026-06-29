@@ -16,6 +16,7 @@ A library for measuring code metrics with tree-sitter.
 - Intra-file call graph metrics, including call counts, fan-in/fan-out, recursion, and call depth
 - File coupling metrics from imports and exports
 - File cohesion metrics from shared function identifiers
+- Architecture metrics, including transitive local dependencies, orchestration score, process lifecycle score, responsibility breadth, and cross-file duplicate symbols
 - TypeScript type-shape metrics, including annotations, aliases, interfaces, generics, unions, intersections, assertions, and conditional types
 - Halstead metrics
 - Maintainability index

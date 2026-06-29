@@ -4,6 +4,7 @@ import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Command, InvalidArgumentError } from 'commander';
+import { measureArchitecture, type ArchitectureFileMetrics, type ArchitectureMetrics } from './architectureMetrics.js';
 import { measureCode } from './metrics.js';
 import { measureTypeScriptProject, type TypeScriptProjectMetrics } from './typescriptProject.js';
 import type { CodeMetrics, FunctionMetrics, LanguageName } from './types.js';
@@ -51,6 +52,7 @@ interface RiskFinding {
 }
 
 interface ScanResult {
+  architecture?: ArchitectureMetrics;
   displayRoot: string;
   errors: string[];
   fatalError?: string;
@@ -98,6 +100,11 @@ const ignoredDirectoryNames = new Set([
 
 const testDirectoryNames = new Set(['__tests__', 'test', 'tests']);
 const testFilePattern = /(?:^test(?:[_-].*)?|\.(?:spec|test)|[_-]test)\.[^.]+$/iu;
+const transitiveDependencyThreshold = 20;
+const responsibilityBreadthThreshold = 6;
+const orchestrationScoreThreshold = 60;
+const processLifecycleThreshold = 8;
+const duplicateSymbolGroupThreshold = 3;
 
 // oxlint-disable-next-line unicorn/prefer-top-level-await -- CommonJS build output cannot preserve top-level await.
 void main().catch((error: unknown) => {
@@ -143,8 +150,9 @@ async function main(): Promise<void> {
   program.action(async (target: string, options: CliOptions) => {
     const resolvedTarget = resolveTarget(target);
     const result = await scanTarget(resolvedTarget, options);
+    await addArchitectureMetrics(result);
     await addTypeScriptProjectMetrics(result, options);
-    const risks = findRiskyFunctions(result.files, options, result.displayRoot);
+    const risks = findRiskyFunctions(result.files, result.architecture, options, result.displayRoot);
 
     if (options.json) {
       printJson(result, risks, options);
@@ -226,6 +234,17 @@ async function addTypeScriptProjectMetrics(result: ScanResult, options: CliOptio
     );
   } catch (error) {
     result.errors.push(`${formatPath(configFile, result.displayRoot)}: ${formatError(error)}`);
+  }
+}
+
+async function addArchitectureMetrics(result: ScanResult): Promise<void> {
+  try {
+    result.architecture = await measureArchitecture(
+      result.files.map(({ file }) => file),
+      result.displayRoot
+    );
+  } catch (error) {
+    result.errors.push(`architecture metrics: ${formatError(error)}`);
   }
 }
 
@@ -387,9 +406,15 @@ async function measureFile(
   }
 }
 
-function findRiskyFunctions(files: FileMetrics[], options: CliOptions, displayRoot: string): RiskFinding[] {
+function findRiskyFunctions(
+  files: FileMetrics[],
+  architecture: ArchitectureMetrics | undefined,
+  options: CliOptions,
+  displayRoot: string
+): RiskFinding[] {
+  const architectureByFile = new Map(architecture?.files.map((file) => [file.file, file]));
   const findings = files.flatMap(({ file, metrics }) => [
-    ...findRiskyFileMetrics(file, metrics, options, displayRoot),
+    ...findRiskyFileMetrics(file, metrics, architectureByFile.get(formatPath(file, displayRoot)), options, displayRoot),
     ...metrics.functions.flatMap((fn) => findRiskyFunctionMetrics(file, metrics.language, fn, options, displayRoot)),
   ]);
 
@@ -400,6 +425,7 @@ function findRiskyFunctions(files: FileMetrics[], options: CliOptions, displayRo
 function findRiskyFileMetrics(
   file: string,
   metrics: CodeMetrics,
+  architecture: ArchitectureFileMetrics | undefined,
   options: CliOptions,
   displayRoot: string
 ): RiskFinding[] {
@@ -407,6 +433,35 @@ function findRiskyFileMetrics(
   const formattedFile = formatPath(file, displayRoot);
   addTrigger(triggers, 'file LOC', metrics.lines.code, options.fileLocThreshold);
   addTrigger(triggers, 'import sources', metrics.coupling.importSourceCount, options.importThreshold);
+  if (architecture) {
+    if (metrics.lines.code >= 100 || architecture.directLocalDependencyCount >= 8) {
+      addTrigger(
+        triggers,
+        'transitive local dependencies',
+        architecture.transitiveLocalDependencyCount,
+        transitiveDependencyThreshold
+      );
+    }
+    addTrigger(
+      triggers,
+      'responsibility breadth',
+      architecture.responsibilityBreadthScore,
+      responsibilityBreadthThreshold
+    );
+    addTrigger(triggers, 'orchestration score', architecture.orchestration.score, orchestrationScoreThreshold);
+    addTrigger(
+      triggers,
+      'process lifecycle score',
+      architecture.orchestration.processLifecycleScore,
+      processLifecycleThreshold
+    );
+    addTrigger(
+      triggers,
+      'duplicate symbol groups',
+      architecture.duplicateSymbolGroupCount,
+      duplicateSymbolGroupThreshold
+    );
+  }
   if (triggers.length === 0) {
     return [];
   }
@@ -510,9 +565,15 @@ function printJson(result: ScanResult, risks: RiskFinding[], options: CliOptions
           fileLoc: options.fileLocThreshold,
           functionLoc: options.functionLocThreshold,
           importSources: options.importThreshold,
+          duplicateSymbolGroups: duplicateSymbolGroupThreshold,
+          orchestrationScore: orchestrationScoreThreshold,
+          processLifecycleScore: processLifecycleThreshold,
+          responsibilityBreadth: responsibilityBreadthThreshold,
+          transitiveLocalDependencies: transitiveDependencyThreshold,
         },
         totalRisks: risks.length,
         truncated: reportedRisks.length < risks.length,
+        architecture: result.architecture,
         typeScriptProject: result.typeScriptProject,
         risks: reportedRisks,
         errors: result.errors,
@@ -540,6 +601,9 @@ function printTextReport(target: string, result: ScanResult, risks: RiskFinding[
   writeStdout(
     `Type annotations ${summary.typeAnnotationCount}, type aliases ${summary.typeAliasCount}, interfaces ${summary.interfaceCount}, avg cohesion ${summary.averageFunctionIdentifierOverlap.toFixed(2)}\n`
   );
+  if (result.architecture) {
+    writeStdout(`${formatArchitectureMetrics(result.architecture)}\n`);
+  }
   if (result.typeScriptProject) {
     writeStdout(`${formatTypeScriptProjectMetrics(result.typeScriptProject)}\n`);
   }
@@ -590,6 +654,11 @@ function formatRiskMetrics(risk: RiskFinding): string {
 
 function formatMetricValue(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
+function formatArchitectureMetrics(metrics: ArchitectureMetrics): string {
+  const maxProcessLifecycleScore = Math.max(...metrics.files.map((file) => file.orchestration.processLifecycleScore));
+  return `Architecture max reachable files ${metrics.maxTransitiveLocalDependencyCount}, max responsibility breadth ${metrics.maxResponsibilityBreadthScore}, max orchestration score ${metrics.maxOrchestrationScore}, max process lifecycle score ${maxProcessLifecycleScore}, duplicate symbol groups ${metrics.duplicateSymbolGroups.length}`;
 }
 
 function formatTypeScriptProjectMetrics(metrics: TypeScriptProjectMetrics): string {
