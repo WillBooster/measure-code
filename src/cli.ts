@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Command, InvalidArgumentError } from 'commander';
 import { measureCode } from './metrics.js';
+import { measureTypeScriptProject, type TypeScriptProjectMetrics } from './typescriptProject.js';
 import type { CodeMetrics, FunctionMetrics, LanguageName } from './types.js';
 
 interface CliOptions {
@@ -21,6 +22,7 @@ interface CliOptions {
   functionLocThreshold: number;
   json?: boolean;
   maxFindings: number;
+  tsconfig?: string;
 }
 
 interface FileMetrics {
@@ -53,6 +55,7 @@ interface ScanResult {
   errors: string[];
   fatalError?: string;
   files: FileMetrics[];
+  typeScriptProject?: TypeScriptProjectMetrics;
 }
 
 const languageByExtension = new Map<string, LanguageName>([
@@ -132,6 +135,7 @@ async function main(): Promise<void> {
     )
     .option('--max-findings <number>', 'maximum number of risk findings to print', parsePositiveInteger, 20)
     .option('--include-tests', 'include test files and test directories')
+    .option('--tsconfig <path>', 'measure TypeScript project metrics with tsgo unstable API')
     .option('--json', 'print JSON output')
     .option('--fail-on-error', 'exit with code 1 when files or directories cannot be scanned')
     .option('--fail-on-risk', 'exit with code 1 when high-risk findings are found');
@@ -139,6 +143,7 @@ async function main(): Promise<void> {
   program.action(async (target: string, options: CliOptions) => {
     const resolvedTarget = resolveTarget(target);
     const result = await scanTarget(resolvedTarget, options);
+    await addTypeScriptProjectMetrics(result, options);
     const risks = findRiskyFunctions(result.files, options, result.displayRoot);
 
     if (options.json) {
@@ -206,6 +211,22 @@ async function scanTarget(target: string, options: CliOptions): Promise<ScanResu
 
   await scanDirectory(canonicalTarget, options, files, errors, new Set(), visitedFiles, canonicalTarget);
   return { displayRoot: canonicalTarget, files, errors };
+}
+
+async function addTypeScriptProjectMetrics(result: ScanResult, options: CliOptions): Promise<void> {
+  if (!options.tsconfig) {
+    return;
+  }
+
+  const configFile = resolveTarget(options.tsconfig);
+  try {
+    result.typeScriptProject = await measureTypeScriptProject(
+      configFile,
+      result.files.map(({ file }) => file)
+    );
+  } catch (error) {
+    result.errors.push(`${formatPath(configFile, result.displayRoot)}: ${formatError(error)}`);
+  }
 }
 
 async function scanDirectory(
@@ -492,6 +513,7 @@ function printJson(result: ScanResult, risks: RiskFinding[], options: CliOptions
         },
         totalRisks: risks.length,
         truncated: reportedRisks.length < risks.length,
+        typeScriptProject: result.typeScriptProject,
         risks: reportedRisks,
         errors: result.errors,
       },
@@ -518,6 +540,9 @@ function printTextReport(target: string, result: ScanResult, risks: RiskFinding[
   writeStdout(
     `Type annotations ${summary.typeAnnotationCount}, type aliases ${summary.typeAliasCount}, interfaces ${summary.interfaceCount}, avg cohesion ${summary.averageFunctionIdentifierOverlap.toFixed(2)}\n`
   );
+  if (result.typeScriptProject) {
+    writeStdout(`${formatTypeScriptProjectMetrics(result.typeScriptProject)}\n`);
+  }
   writeStdout(
     `Risk thresholds: file LOC >= ${options.fileLocThreshold}, function LOC >= ${options.functionLocThreshold}, component LOC >= ${options.componentLocThreshold}, cognitive >= ${options.cognitiveThreshold}, cyclomatic >= ${options.cyclomaticThreshold}, calls >= ${options.callThreshold}, imports >= ${options.importThreshold}, fan-out >= ${options.fanOutThreshold}\n`
   );
@@ -565,6 +590,10 @@ function formatRiskMetrics(risk: RiskFinding): string {
 
 function formatMetricValue(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
+function formatTypeScriptProjectMetrics(metrics: TypeScriptProjectMetrics): string {
+  return `TypeScript project root files ${metrics.rootFileCount}, measured roots ${metrics.measuredRootFileCount}, semantic diagnostics ${metrics.semanticDiagnosticCount}, resolved calls ${metrics.resolvedCallExpressionCount}/${metrics.callExpressionCount} (${(metrics.resolvedCallExpressionRatio * 100).toFixed(1)}%)`;
 }
 
 function summarize(files: FileMetrics[]): {
