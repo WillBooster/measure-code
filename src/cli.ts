@@ -53,6 +53,7 @@ interface RiskFinding {
 
 interface ScanResult {
   architecture?: ArchitectureMetrics;
+  componentFunctionKeys?: Set<string>;
   displayRoot: string;
   errors: string[];
   fatalError?: string;
@@ -142,7 +143,7 @@ async function main(): Promise<void> {
     )
     .option('--max-findings <number>', 'maximum number of risk findings to print', parsePositiveInteger, 20)
     .option('--include-tests', 'include test files and test directories')
-    .option('--tsconfig <path>', 'measure TypeScript project metrics with tsgo unstable API')
+    .option('--tsconfig <path>', 'TypeScript project file to use instead of auto-detected tsconfig.json')
     .option('--json', 'print JSON output')
     .option('--fail-on-error', 'exit with code 1 when files or directories cannot be scanned')
     .option('--fail-on-risk', 'exit with code 1 when high-risk findings are found');
@@ -151,8 +152,14 @@ async function main(): Promise<void> {
     const resolvedTarget = resolveTarget(target);
     const result = await scanTarget(resolvedTarget, options);
     await addArchitectureMetrics(result);
-    await addTypeScriptProjectMetrics(result, options);
-    const risks = findRiskyFunctions(result.files, result.architecture, options, result.displayRoot);
+    await addTypeScriptProjectMetrics(result, options, resolvedTarget);
+    const risks = findRiskyFunctions(
+      result.files,
+      result.architecture,
+      result.componentFunctionKeys,
+      options,
+      result.displayRoot
+    );
 
     if (options.json) {
       printJson(result, risks, options);
@@ -221,19 +228,54 @@ async function scanTarget(target: string, options: CliOptions): Promise<ScanResu
   return { displayRoot: canonicalTarget, files, errors };
 }
 
-async function addTypeScriptProjectMetrics(result: ScanResult, options: CliOptions): Promise<void> {
-  if (!options.tsconfig) {
+async function addTypeScriptProjectMetrics(
+  result: ScanResult,
+  options: CliOptions,
+  resolvedTarget: string
+): Promise<void> {
+  const configFile = options.tsconfig ? resolveTarget(options.tsconfig) : await findNearestTsconfig(resolvedTarget);
+  if (!configFile) {
     return;
   }
 
-  const configFile = resolveTarget(options.tsconfig);
   try {
     result.typeScriptProject = await measureTypeScriptProject(
       configFile,
       result.files.map(({ file }) => file)
     );
+    result.componentFunctionKeys = new Set(
+      result.typeScriptProject.reactComponentFunctions.map((component) =>
+        functionLocationKey(component.file, component.startLine)
+      )
+    );
   } catch (error) {
     result.errors.push(`${formatPath(configFile, result.displayRoot)}: ${formatError(error)}`);
+  }
+}
+
+async function findNearestTsconfig(target: string): Promise<string | undefined> {
+  const targetStat = await stat(target);
+  let currentDirectory = targetStat.isDirectory() ? target : path.dirname(target);
+  while (true) {
+    const configFile = path.join(currentDirectory, 'tsconfig.json');
+    if (await fileExists(configFile)) {
+      return configFile;
+    }
+
+    const parentDirectory = path.dirname(currentDirectory);
+    if (parentDirectory === currentDirectory) {
+      return undefined;
+    }
+    currentDirectory = parentDirectory;
+  }
+}
+
+async function fileExists(file: string): Promise<boolean> {
+  try {
+    const fileStat = await stat(file);
+    return fileStat.isFile();
+  } catch {
+    return false;
   }
 }
 
@@ -409,13 +451,16 @@ async function measureFile(
 function findRiskyFunctions(
   files: FileMetrics[],
   architecture: ArchitectureMetrics | undefined,
+  componentFunctionKeys: Set<string> | undefined,
   options: CliOptions,
   displayRoot: string
 ): RiskFinding[] {
   const architectureByFile = new Map(architecture?.files.map((file) => [file.file, file]));
   const findings = files.flatMap(({ file, metrics }) => [
     ...findRiskyFileMetrics(file, metrics, architectureByFile.get(formatPath(file, displayRoot)), options, displayRoot),
-    ...metrics.functions.flatMap((fn) => findRiskyFunctionMetrics(file, metrics.language, fn, options, displayRoot)),
+    ...metrics.functions.flatMap((fn) =>
+      findRiskyFunctionMetrics(file, metrics.language, fn, options, displayRoot, componentFunctionKeys)
+    ),
   ]);
 
   findings.sort(compareRiskFindings);
@@ -484,10 +529,11 @@ function findRiskyFunctionMetrics(
   language: LanguageName,
   fn: FunctionMetrics,
   options: CliOptions,
-  displayRoot: string
+  displayRoot: string,
+  componentFunctionKeys?: Set<string>
 ): RiskFinding[] {
   const loc = fn.endLine - fn.startLine + 1;
-  const isComponent = isReactComponent(language, fn);
+  const isComponent = isReactComponent(file, fn, componentFunctionKeys);
   const kind = isComponent ? 'component' : 'function';
   const triggers: RiskTrigger[] = [];
   addTrigger(triggers, 'cognitive complexity', fn.cognitiveComplexity, options.cognitiveThreshold);
@@ -523,16 +569,16 @@ function addTrigger(triggers: RiskTrigger[], metric: string, value: number, thre
   triggers.push({ metric, value, threshold, score: value / threshold });
 }
 
-function isReactComponent(language: LanguageName, fn: FunctionMetrics): boolean {
-  return isJavaScriptLikeLanguage(language) && fn.returnsJsx && fn.name !== undefined && /^[A-Z]/u.test(fn.name);
-}
-
-function isJavaScriptLikeLanguage(language: LanguageName): boolean {
-  return language === 'javascript' || language === 'jsx' || language === 'typescript' || language === 'tsx';
+function isReactComponent(file: string, fn: FunctionMetrics, componentFunctionKeys: Set<string> | undefined): boolean {
+  return componentFunctionKeys?.has(functionLocationKey(file, fn.startLine)) ?? false;
 }
 
 function getLocThreshold(isComponent: boolean, options: CliOptions): number {
   return isComponent ? options.componentLocThreshold : options.functionLocThreshold;
+}
+
+function functionLocationKey(file: string, startLine: number): string {
+  return `${path.resolve(file)}:${startLine}`;
 }
 
 function maxTriggerScore(triggers: RiskTrigger[]): number {
