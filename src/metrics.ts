@@ -600,6 +600,10 @@ function declarationFromNode(node: Parser.SyntaxNode, exported: boolean): Declar
 }
 
 function findDeclarationName(node: Parser.SyntaxNode): string | undefined {
+  if (node.type === 'method_declaration') {
+    return findGoMethodDeclarationName(node);
+  }
+
   const nameNode = node.childForFieldName('name');
   if (nameNode) {
     return isDeclarationNameNode(nameNode) ? nameNode.text : undefined;
@@ -618,7 +622,8 @@ function isDeclarationContainer(node: Parser.SyntaxNode): boolean {
     node.type === 'variable_declaration' ||
     node.type === 'type_declaration' ||
     node.type === 'const_declaration' ||
-    node.type === 'var_declaration'
+    node.type === 'var_declaration' ||
+    node.type === 'var_spec_list'
   );
 }
 
@@ -677,6 +682,20 @@ function findExportedName(node: Parser.SyntaxNode): string | undefined {
   const nameNode =
     node.childForFieldName('name') ?? node.childForFieldName('alias') ?? node.namedChildren.find(isDeclarationNameNode);
   return nameNode && isDeclarationNameNode(nameNode) ? nameNode.text : undefined;
+}
+
+function findGoMethodDeclarationName(node: Parser.SyntaxNode): string | undefined {
+  const nameNode = node.childForFieldName('name');
+  const receiverTypeNode = node.childForFieldName('receiver')?.namedChildren[0]?.childForFieldName('type');
+  if (!nameNode || !isDeclarationNameNode(nameNode) || !receiverTypeNode) {
+    return nameNode && isDeclarationNameNode(nameNode) ? nameNode.text : undefined;
+  }
+
+  return `${normalizeGoReceiverType(receiverTypeNode.text)}.${nameNode.text}`;
+}
+
+function normalizeGoReceiverType(receiverType: string): string {
+  return receiverType.replaceAll(/\s+/gu, '').replace(/^\*+/u, '');
 }
 
 function measureCoupling(root: Parser.SyntaxNode, language: LanguageDefinition): CouplingMetrics {
@@ -1163,8 +1182,18 @@ function findImportSources(
     }
   }
 
+  if (isDynamicImportNode(node)) {
+    return findDynamicImportSources(node);
+  }
+
   const sourceNode = node.childForFieldName('source') ?? findFirstStringNode(node);
   return sourceNode ? [unquote(sourceNode.text)] : [];
+}
+
+function findDynamicImportSources(node: Parser.SyntaxNode): string[] {
+  const argumentsNode = node.childForFieldName('arguments');
+  const firstArgument = argumentsNode?.namedChild(0);
+  return firstArgument && isStringNode(firstArgument) ? [unquote(firstArgument.text)] : [];
 }
 
 function isRelativeImportSource(source: string): boolean {
@@ -1255,7 +1284,7 @@ function normalizeImportSource(source: string): string {
 }
 
 function findFirstStringNode(node: Parser.SyntaxNode): Parser.SyntaxNode | undefined {
-  if (node.type === 'string' || node.type === 'string_literal' || node.type === 'interpreted_string_literal') {
+  if (isStringNode(node)) {
     return node;
   }
 
@@ -1267,6 +1296,10 @@ function findFirstStringNode(node: Parser.SyntaxNode): Parser.SyntaxNode | undef
   }
 
   return undefined;
+}
+
+function isStringNode(node: Parser.SyntaxNode): boolean {
+  return node.type === 'string' || node.type === 'string_literal' || node.type === 'interpreted_string_literal';
 }
 
 function unquote(value: string): string {
