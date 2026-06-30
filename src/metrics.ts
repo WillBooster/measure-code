@@ -552,7 +552,7 @@ function measureModule(root: Parser.SyntaxNode, language: LanguageDefinition): M
   const importSources = new Set<string>();
 
   function visitImports(node: Parser.SyntaxNode): void {
-    if (isImportNode(node)) {
+    if (isImportSourceNode(node, language)) {
       for (const source of findImportSources(node, language)) {
         importSources.add(source);
       }
@@ -580,10 +580,8 @@ function collectTopLevelDeclarations(node: Parser.SyntaxNode, exported: boolean)
     return node.namedChildren.flatMap((child) => collectTopLevelDeclarations(child, true));
   }
 
-  if (isVariableDeclarationContainer(node)) {
-    return node.namedChildren.flatMap((child) =>
-      child.type === 'variable_declarator' ? declarationFromNode(child, exported) : []
-    );
+  if (isDeclarationContainer(node)) {
+    return node.namedChildren.flatMap((child) => collectTopLevelDeclarations(child, exported));
   }
 
   return declarationFromNode(node, exported);
@@ -611,8 +609,14 @@ function isModuleExportNode(node: Parser.SyntaxNode): boolean {
   return node.type === 'export_statement' || node.type === 'export_declaration';
 }
 
-function isVariableDeclarationContainer(node: Parser.SyntaxNode): boolean {
-  return node.type === 'lexical_declaration' || node.type === 'variable_declaration';
+function isDeclarationContainer(node: Parser.SyntaxNode): boolean {
+  return (
+    node.type === 'lexical_declaration' ||
+    node.type === 'variable_declaration' ||
+    node.type === 'type_declaration' ||
+    node.type === 'const_declaration' ||
+    node.type === 'var_declaration'
+  );
 }
 
 function isTopLevelDeclarationNode(node: Parser.SyntaxNode): boolean {
@@ -626,6 +630,9 @@ function isTopLevelDeclarationNode(node: Parser.SyntaxNode): boolean {
     node.type === 'interface_declaration' ||
     node.type === 'type_alias_declaration' ||
     node.type === 'type_declaration' ||
+    node.type === 'type_spec' ||
+    node.type === 'const_spec' ||
+    node.type === 'var_spec' ||
     node.type === 'variable_declarator'
   );
 }
@@ -645,8 +652,11 @@ function measureCoupling(root: Parser.SyntaxNode, language: LanguageDefinition):
   let exportCount = 0;
 
   function visit(node: Parser.SyntaxNode): void {
-    if (isImportNode(node)) {
+    if (isImportNode(node) || isDynamicImportNode(node)) {
       importCount += 1;
+    }
+
+    if (isImportSourceNode(node, language)) {
       for (const source of findImportSources(node, language)) {
         importSources.add(source);
       }
@@ -740,7 +750,11 @@ function isLoopNode(node: Parser.SyntaxNode): boolean {
 }
 
 function isMutableBindingNode(node: Parser.SyntaxNode): boolean {
-  return node.type === 'lexical_declaration' && node.firstChild?.text === 'let';
+  return (
+    (node.type === 'lexical_declaration' && node.firstChild?.text === 'let') ||
+    (node.type === 'variable_declaration' && node.firstChild?.text === 'var') ||
+    node.type === 'var_declaration'
+  );
 }
 
 function isReturnNode(node: Parser.SyntaxNode): boolean {
@@ -1085,6 +1099,23 @@ function isImportNode(node: Parser.SyntaxNode): boolean {
     node.type === 'import_spec' ||
     node.type === 'import_spec_list'
   );
+}
+
+function isImportSourceNode(node: Parser.SyntaxNode, language: LanguageDefinition): boolean {
+  return (
+    isImportNode(node) ||
+    isDynamicImportNode(node) ||
+    (isExportNode(node) && findImportSources(node, language).length > 0)
+  );
+}
+
+function isDynamicImportNode(node: Parser.SyntaxNode): boolean {
+  if (!isCallNode(node)) {
+    return false;
+  }
+
+  const calleeNode = node.childForFieldName('function') ?? node.namedChild(0);
+  return calleeNode?.text === 'import';
 }
 
 function findImportSources(node: Parser.SyntaxNode, language: LanguageDefinition): string[] {

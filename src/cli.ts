@@ -233,6 +233,10 @@ async function addTypeScriptProjectMetrics(
   options: CliOptions,
   resolvedTarget: string
 ): Promise<void> {
+  if (result.fatalError) {
+    return;
+  }
+
   const configFile = options.tsconfig ? resolveTarget(options.tsconfig) : await findNearestTsconfig(resolvedTarget);
   if (!configFile) {
     return;
@@ -280,6 +284,10 @@ async function fileExists(file: string): Promise<boolean> {
 }
 
 async function addArchitectureMetrics(result: ScanResult): Promise<void> {
+  if (result.fatalError) {
+    return;
+  }
+
   try {
     result.architecture = measureArchitecture(
       result.files.map(({ file, metrics }) => ({ file, metrics })),

@@ -1,6 +1,6 @@
 import { realpath } from 'node:fs/promises';
 import { API, SignatureKind, type Checker, type Type } from '@typescript/native-preview/unstable/async';
-import { SyntaxKind, type Node, type SourceFile } from '@typescript/native-preview/unstable/ast';
+import { getTokenPosOfNode, SyntaxKind, type Node, type SourceFile } from '@typescript/native-preview/unstable/ast';
 
 export interface ReactComponentFunctionMetric {
   file: string;
@@ -149,12 +149,13 @@ async function collectReactComponentFunctions(
       continue;
     }
     const name = findNameNode(candidate);
+    const functionNode = findComponentFunctionNode(candidate);
     components.push({
       name: name ? findCandidateName(name) : undefined,
-      startLine: lineAtPosition(sourceFile.text, name?.pos ?? candidate.pos),
+      startLine: lineAtPosition(sourceFile.text, getTokenPosOfNode(functionNode, sourceFile)),
     });
   }
-  return components;
+  return dedupeReactComponentFunctions(components);
 }
 
 function collectReactComponentCandidates(root: Node): Node[] {
@@ -173,20 +174,28 @@ async function isReactComponentCandidate(node: Node, checker: Checker): Promise<
     return false;
   }
 
-  if (await isReactComponentType(type, node, checker)) {
-    return true;
-  }
-
   const name = findNameNode(node);
-  const namedType = name ? await checker.getTypeAtLocation(name) : undefined;
-  return namedType ? await isReactComponentType(namedType, node, checker) : false;
-}
-
-async function isReactComponentType(type: Type, node: Node, checker: Checker): Promise<boolean> {
+  const componentName = name ? findCandidateName(name) : undefined;
   if (await hasReactComponentTypeName(type, node, checker)) {
     return true;
   }
 
+  const namedType = name ? await checker.getTypeAtLocation(name) : undefined;
+  if (namedType && (await hasReactComponentTypeName(namedType, node, checker))) {
+    return true;
+  }
+
+  if (!isUppercaseComponentName(componentName)) {
+    return false;
+  }
+
+  return (
+    (await hasReactRenderableReturnType(type, node, checker)) ||
+    Boolean(namedType && (await hasReactRenderableReturnType(namedType, node, checker)))
+  );
+}
+
+async function hasReactRenderableReturnType(type: Type, node: Node, checker: Checker): Promise<boolean> {
   const signatures = await checker.getSignaturesOfType(type, SignatureKind.Call);
   for (const signature of signatures) {
     const returnType = await checker.getReturnTypeOfSignature(signature);
@@ -226,6 +235,38 @@ function isVariableFunctionCandidate(node: Node): boolean {
   return initializer ? isFunctionLikeCandidate(initializer) || initializer.kind === SyntaxKind.CallExpression : false;
 }
 
+function findComponentFunctionNode(node: Node): Node {
+  if (isFunctionLikeCandidate(node)) {
+    return node;
+  }
+
+  const initializer = getNodeProperty(node, 'initializer');
+  return initializer ? (findFirstFunctionLikeNode(initializer) ?? initializer) : node;
+}
+
+function findFirstFunctionLikeNode(node: Node): Node | undefined {
+  if (isFunctionLikeCandidate(node)) {
+    return node;
+  }
+
+  let foundNode: Node | undefined;
+  node.forEachChild((child) => {
+    foundNode ??= findFirstFunctionLikeNode(child);
+    return foundNode;
+  });
+  return foundNode;
+}
+
+function dedupeReactComponentFunctions(
+  components: readonly Omit<ReactComponentFunctionMetric, 'file'>[]
+): Omit<ReactComponentFunctionMetric, 'file'>[] {
+  const componentByKey = new Map<string, Omit<ReactComponentFunctionMetric, 'file'>>();
+  for (const component of components) {
+    componentByKey.set(`${component.name ?? ''}:${component.startLine}`, component);
+  }
+  return [...componentByKey.values()];
+}
+
 function findCandidateName(name: Node): string | undefined {
   if ('escapedText' in name) {
     return String(name.escapedText);
@@ -234,6 +275,10 @@ function findCandidateName(name: Node): string | undefined {
     return name.text;
   }
   return undefined;
+}
+
+function isUppercaseComponentName(name: string | undefined): boolean {
+  return name !== undefined && /^[A-Z]/u.test(name);
 }
 
 function findNameNode(node: Node): Node | undefined {
