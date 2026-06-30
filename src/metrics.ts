@@ -89,6 +89,7 @@ interface FunctionAnalysis {
   index: number;
   name?: string;
   startLine: number;
+  startColumn: number;
   endLine: number;
   returnsJsx: boolean;
   cyclomaticComplexity: number;
@@ -186,6 +187,7 @@ function measureStructuralMetrics(
   const functionsWithGraph = analyses.map((analysis) => ({
     name: analysis.name,
     startLine: analysis.startLine,
+    startColumn: analysis.startColumn,
     endLine: analysis.endLine,
     returnsJsx: analysis.returnsJsx,
     cyclomaticComplexity: analysis.cyclomaticComplexity,
@@ -215,6 +217,7 @@ function analyzeFunction(node: Parser.SyntaxNode, language: LanguageDefinition, 
     index,
     name: findFunctionName(node),
     startLine: node.startPosition.row + 1,
+    startColumn: node.startPosition.column,
     endLine: node.endPosition.row + 1,
     returnsJsx: returnsJsx(node, language),
     cyclomaticComplexity: complexity.cyclomaticComplexity,

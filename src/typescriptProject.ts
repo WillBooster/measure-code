@@ -7,6 +7,7 @@ export interface ReactComponentFunctionMetric {
   file: string;
   name?: string;
   startLine: number;
+  startColumn: number;
 }
 
 export interface TypeScriptProjectMetrics {
@@ -185,10 +186,13 @@ async function collectReactComponentFunctions(
     }
     const name = findNameNode(candidate);
     const functionNode = findComponentFunctionNode(candidate);
+    const startOffset = findFunctionStartPosition(sourceFile.text, functionNode, name, sourceFile);
+    const startPosition = positionToLineColumn(sourceFile.text, startOffset);
     components.push({
       implementationKey: `${functionNode.pos}:${functionNode.end}`,
       name: name ? findCandidateName(name) : undefined,
-      startLine: lineAtPosition(sourceFile.text, getTokenPosOfNode(functionNode, sourceFile)),
+      startColumn: startPosition.column,
+      startLine: startPosition.line,
     });
   }
   return dedupeReactComponentFunctions(components);
@@ -323,6 +327,23 @@ function findDirectFunctionLikeChild(node: Node): Node | undefined {
   return functionNode;
 }
 
+function findFunctionStartPosition(
+  text: string,
+  functionNode: Node,
+  name: Node | undefined,
+  sourceFile: SourceFile
+): number {
+  const tokenPosition = getTokenPosOfNode(functionNode, sourceFile);
+  if (functionNode.kind !== SyntaxKind.FunctionDeclaration || !name) {
+    return tokenPosition;
+  }
+
+  const functionName = findCandidateName(name);
+  const namePosition = functionName ? text.indexOf(functionName, tokenPosition) : -1;
+  const functionPosition = namePosition >= 0 ? text.lastIndexOf('function', namePosition) : -1;
+  return functionPosition >= tokenPosition ? functionPosition : tokenPosition;
+}
+
 function dedupeReactComponentFunctions(
   components: readonly ReactComponentCandidateMetric[]
 ): Omit<ReactComponentFunctionMetric, 'file'>[] {
@@ -335,6 +356,7 @@ function dedupeReactComponentFunctions(
   }
   return [...componentByKey.values()].map((component) => ({
     name: component.name,
+    startColumn: component.startColumn,
     startLine: component.startLine,
   }));
 }
@@ -409,8 +431,9 @@ function isNode(value: unknown): value is Node {
   return typeof value === 'object' && value !== null && 'kind' in value && 'pos' in value && 'end' in value;
 }
 
-function lineAtPosition(text: string, position: number): number {
-  return text.slice(0, position).split('\n').length;
+function positionToLineColumn(text: string, position: number): { column: number; line: number } {
+  const lines = text.slice(0, position).split('\n');
+  return { column: lines.at(-1)?.length ?? 0, line: lines.length };
 }
 
 function collectCallExpressions(root: Node): Node[] {

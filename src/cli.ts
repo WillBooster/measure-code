@@ -258,7 +258,7 @@ async function addTypeScriptProjectMetrics(
     );
     result.componentFunctionKeys = new Set(
       result.typeScriptProject.reactComponentFunctions.map((component) =>
-        functionLocationKey(component.file, component.startLine)
+        functionLocationKey(component.file, component.startLine, component.startColumn)
       )
     );
   } catch (error) {
@@ -502,7 +502,8 @@ function findRiskyFileMetrics(
   addTrigger(triggers, 'file LOC', metrics.lines.code, options.fileLocThreshold);
   addTrigger(triggers, 'import sources', metrics.coupling.importSourceCount, options.importThreshold);
   if (architecture) {
-    if (metrics.lines.code >= 100 || architecture.directLocalDependencyCount >= 8) {
+    const hasFileScaleRisk = metrics.lines.code >= 100 || architecture.directLocalDependencyCount >= 8;
+    if (hasFileScaleRisk) {
       addTrigger(
         triggers,
         'transitive local dependencies',
@@ -510,7 +511,13 @@ function findRiskyFileMetrics(
         transitiveDependencyThreshold
       );
     }
-    addTrigger(triggers, 'structural breadth', architecture.structuralBreadthScore, structuralBreadthThreshold);
+    if (
+      triggers.length > 0 ||
+      architecture.directLocalDependencyCount >= 8 ||
+      architecture.structuralCoordination.score >= structuralCoordinationThreshold
+    ) {
+      addTrigger(triggers, 'structural breadth', architecture.structuralBreadthScore, structuralBreadthThreshold);
+    }
     addTrigger(
       triggers,
       'structural coordination',
@@ -593,15 +600,15 @@ function addTrigger(triggers: RiskTrigger[], metric: string, value: number, thre
 }
 
 function isReactComponent(file: string, fn: FunctionMetrics, componentFunctionKeys: Set<string> | undefined): boolean {
-  return componentFunctionKeys?.has(functionLocationKey(file, fn.startLine)) ?? false;
+  return componentFunctionKeys?.has(functionLocationKey(file, fn.startLine, fn.startColumn)) ?? false;
 }
 
 function getLocThreshold(isComponent: boolean, options: CliOptions): number {
   return isComponent ? options.componentLocThreshold : options.functionLocThreshold;
 }
 
-function functionLocationKey(file: string, startLine: number): string {
-  return `${path.resolve(file)}:${startLine}`;
+function functionLocationKey(file: string, startLine: number, startColumn: number): string {
+  return `${path.resolve(file)}:${startLine}:${startColumn}`;
 }
 
 function maxTriggerScore(triggers: RiskTrigger[]): number {

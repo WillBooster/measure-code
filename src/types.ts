@@ -42,6 +42,7 @@ export interface HalsteadMetrics {
 export interface FunctionMetrics {
   name?: string;
   startLine: number;
+  startColumn: number;
   endLine: number;
   returnsJsx: boolean;
   cyclomaticComplexity: number;
