@@ -552,7 +552,7 @@ function measureModule(root: Parser.SyntaxNode, language: LanguageDefinition): M
   const importSources = new Set<string>();
 
   function visitImports(node: Parser.SyntaxNode): void {
-    if (isImportSourceNode(node, language)) {
+    if (isImportSourceNode(node)) {
       for (const source of findImportSources(node, language)) {
         importSources.add(source);
       }
@@ -656,7 +656,7 @@ function measureCoupling(root: Parser.SyntaxNode, language: LanguageDefinition):
       importCount += 1;
     }
 
-    if (isImportSourceNode(node, language)) {
+    if (isImportSourceNode(node)) {
       for (const source of findImportSources(node, language)) {
         importSources.add(source);
       }
@@ -732,6 +732,8 @@ function isAssignmentNode(node: Parser.SyntaxNode): boolean {
     node.type === 'assignment_expression' ||
     node.type === 'augmented_assignment_expression' ||
     node.type === 'assignment_statement' ||
+    node.type === 'assignment' ||
+    node.type === 'augmented_assignment' ||
     node.type === 'short_var_declaration'
   );
 }
@@ -1101,11 +1103,9 @@ function isImportNode(node: Parser.SyntaxNode): boolean {
   );
 }
 
-function isImportSourceNode(node: Parser.SyntaxNode, language: LanguageDefinition): boolean {
+function isImportSourceNode(node: Parser.SyntaxNode): boolean {
   return (
-    isImportNode(node) ||
-    isDynamicImportNode(node) ||
-    (isExportNode(node) && findImportSources(node, language).length > 0)
+    isImportNode(node) || isDynamicImportNode(node) || (isExportNode(node) && node.childForFieldName('source') !== null)
   );
 }
 
@@ -1137,7 +1137,16 @@ function isRelativeImportSource(source: string): boolean {
 function findPythonImportSources(node: Parser.SyntaxNode): string[] {
   if (node.type === 'import_from_statement') {
     const moduleNode = node.childForFieldName('module_name');
-    return moduleNode ? [normalizeImportSource(moduleNode.text)] : [];
+    if (!moduleNode) {
+      return [];
+    }
+
+    const moduleSource = normalizeImportSource(moduleNode.text);
+    const nameNode = node.childForFieldName('name');
+    if (/^\.+$/u.test(moduleSource) && nameNode) {
+      return findPythonImportNames(nameNode).map((name) => `${moduleSource}${name}`);
+    }
+    return [moduleSource];
   }
 
   if (node.type !== 'import_statement') {
@@ -1147,6 +1156,18 @@ function findPythonImportSources(node: Parser.SyntaxNode): string[] {
   return node.namedChildren
     .map((child) => findPythonImportedModuleName(child))
     .filter((source) => source !== undefined);
+}
+
+function findPythonImportNames(node: Parser.SyntaxNode): string[] {
+  if (node.type === 'identifier') {
+    return [node.text];
+  }
+
+  if (node.type === 'dotted_name') {
+    return [normalizeImportSource(node.text)];
+  }
+
+  return node.namedChildren.flatMap(findPythonImportNames);
 }
 
 function findPythonImportedModuleName(node: Parser.SyntaxNode): string | undefined {

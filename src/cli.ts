@@ -236,6 +236,9 @@ async function addTypeScriptProjectMetrics(
   if (result.fatalError) {
     return;
   }
+  if (result.files.length === 0) {
+    return;
+  }
 
   const configFile = options.tsconfig ? resolveTarget(options.tsconfig) : await findNearestTsconfig(resolvedTarget);
   if (!configFile) {

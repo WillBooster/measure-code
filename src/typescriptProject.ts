@@ -232,7 +232,10 @@ function isVariableFunctionCandidate(node: Node): boolean {
   }
 
   const initializer = getNodeProperty(node, 'initializer');
-  return initializer ? isFunctionLikeCandidate(initializer) || initializer.kind === SyntaxKind.CallExpression : false;
+  const unwrappedInitializer = initializer ? unwrapExpression(initializer) : undefined;
+  return unwrappedInitializer
+    ? isFunctionLikeCandidate(unwrappedInitializer) || unwrappedInitializer.kind === SyntaxKind.CallExpression
+    : false;
 }
 
 function findComponentFunctionNode(node: Node): Node {
@@ -241,7 +244,8 @@ function findComponentFunctionNode(node: Node): Node {
   }
 
   const initializer = getNodeProperty(node, 'initializer');
-  return initializer ? (findFirstFunctionLikeNode(initializer) ?? initializer) : node;
+  const unwrappedInitializer = initializer ? unwrapExpression(initializer) : undefined;
+  return unwrappedInitializer ? (findFirstFunctionLikeNode(unwrappedInitializer) ?? unwrappedInitializer) : node;
 }
 
 function findFirstFunctionLikeNode(node: Node): Node | undefined {
@@ -287,11 +291,45 @@ function findNameNode(node: Node): Node | undefined {
     return name;
   }
 
-  const parent = getNodeProperty(node, 'parent');
-  return parent?.kind === SyntaxKind.VariableDeclaration ? getNodeProperty(parent, 'name') : undefined;
+  let currentNode: Node | undefined = node;
+  while (currentNode) {
+    const parent = getNodeProperty(currentNode, 'parent');
+    if (!parent) {
+      return undefined;
+    }
+    if (parent.kind === SyntaxKind.VariableDeclaration) {
+      return getNodeProperty(parent, 'name');
+    }
+    if (!isExpressionWrapperNode(parent)) {
+      return undefined;
+    }
+    currentNode = parent;
+  }
+  return undefined;
 }
 
-function getNodeProperty(node: Node, property: 'initializer' | 'name' | 'parent'): Node | undefined {
+function unwrapExpression(node: Node): Node {
+  let currentNode = node;
+  while (isExpressionWrapperNode(currentNode)) {
+    const expression = getNodeProperty(currentNode, 'expression');
+    if (!expression) {
+      return currentNode;
+    }
+    currentNode = expression;
+  }
+  return currentNode;
+}
+
+function isExpressionWrapperNode(node: Node): boolean {
+  return (
+    node.kind === SyntaxKind.ParenthesizedExpression ||
+    node.kind === SyntaxKind.AsExpression ||
+    node.kind === SyntaxKind.TypeAssertionExpression ||
+    node.kind === SyntaxKind.SatisfiesExpression
+  );
+}
+
+function getNodeProperty(node: Node, property: 'expression' | 'initializer' | 'name' | 'parent'): Node | undefined {
   const value = (node as Partial<Record<typeof property, Node>>)[property];
   return isNode(value) ? value : undefined;
 }

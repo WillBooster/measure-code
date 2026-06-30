@@ -109,19 +109,22 @@ function resolveLocalImport(fromFile: string, source: string, fileSet: Set<strin
   if (!source.startsWith('.')) {
     return undefined;
   }
-  const fromDirectory = path.dirname(fromFile);
-  const base = path.normalize(path.join(fromDirectory, source));
-  const extension = path.extname(base);
-  const stems = extension ? [base.slice(0, -extension.length), base] : [base];
+  const bases = localImportBases(fromFile, source);
+  const stems = bases.flatMap((base) => {
+    const extension = path.extname(base);
+    return extension ? [base.slice(0, -extension.length), base] : [base];
+  });
   for (const stem of stems) {
     for (const candidate of [
       `${stem}.ts`,
       `${stem}.tsx`,
       `${stem}.js`,
       `${stem}.jsx`,
+      `${stem}.py`,
       path.join(stem, 'index.ts'),
       path.join(stem, 'index.tsx'),
       path.join(stem, 'index.js'),
+      path.join(stem, '__init__.py'),
     ]) {
       if (fileSet.has(candidate)) {
         return candidate;
@@ -129,6 +132,32 @@ function resolveLocalImport(fromFile: string, source: string, fileSet: Set<strin
     }
   }
   return undefined;
+}
+
+function localImportBases(fromFile: string, source: string): string[] {
+  const fromDirectory = path.dirname(fromFile);
+  if (isPathRelativeImport(source)) {
+    return [path.normalize(path.join(fromDirectory, source))];
+  }
+
+  const match = /^(?<dots>\.+)(?<module>.*)$/u.exec(source);
+  const dots = match?.groups?.dots;
+  const moduleName = match?.groups?.module;
+  if (!dots || moduleName === undefined) {
+    return [];
+  }
+
+  let baseDirectory = fromDirectory;
+  for (let index = 1; index < dots.length; index += 1) {
+    baseDirectory = path.dirname(baseDirectory);
+  }
+
+  const modulePath = moduleName.replaceAll('.', path.sep);
+  return [path.normalize(path.join(baseDirectory, modulePath))];
+}
+
+function isPathRelativeImport(source: string): boolean {
+  return source.startsWith('./') || source.startsWith('../') || source.includes('/');
 }
 
 function measureTransitiveDependencyCount(file: string, graph: Map<string, Set<string>>): number {
