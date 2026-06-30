@@ -240,7 +240,13 @@ async function addTypeScriptProjectMetrics(
     return;
   }
 
-  const configFile = options.tsconfig ? resolveTarget(options.tsconfig) : await findNearestTsconfig(resolvedTarget);
+  const explicitConfigFile = options.tsconfig;
+  const isExplicitConfig = explicitConfigFile !== undefined;
+  if (!isExplicitConfig && !result.files.some(({ file }) => isTypeScriptFile(file))) {
+    return;
+  }
+
+  const configFile = explicitConfigFile ? resolveTarget(explicitConfigFile) : await findNearestTsconfig(resolvedTarget);
   if (!configFile) {
     return;
   }
@@ -256,8 +262,14 @@ async function addTypeScriptProjectMetrics(
       )
     );
   } catch (error) {
-    result.errors.push(`${formatPath(configFile, result.displayRoot)}: ${formatError(error)}`);
+    if (isExplicitConfig) {
+      result.errors.push(`${formatPath(configFile, result.displayRoot)}: ${formatError(error)}`);
+    }
   }
+}
+
+function isTypeScriptFile(file: string): boolean {
+  return ['.cts', '.mts', '.ts', '.tsx'].includes(path.extname(file));
 }
 
 async function findNearestTsconfig(target: string): Promise<string | undefined> {

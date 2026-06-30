@@ -553,7 +553,7 @@ function measureModule(root: Parser.SyntaxNode, language: LanguageDefinition): M
 
   function visitImports(node: Parser.SyntaxNode): void {
     if (isImportSourceNode(node)) {
-      for (const source of findImportSources(node, language)) {
+      for (const source of findImportSources(node, language, { expandPythonSubmodules: true })) {
         importSources.add(source);
       }
     }
@@ -690,7 +690,7 @@ function measureCoupling(root: Parser.SyntaxNode, language: LanguageDefinition):
     }
 
     if (isImportSourceNode(node)) {
-      for (const source of findImportSources(node, language)) {
+      for (const source of findImportSources(node, language, { expandPythonSubmodules: false })) {
         importSources.add(source);
       }
     }
@@ -1151,9 +1151,13 @@ function isDynamicImportNode(node: Parser.SyntaxNode): boolean {
   return calleeNode?.text === 'import';
 }
 
-function findImportSources(node: Parser.SyntaxNode, language: LanguageDefinition): string[] {
+function findImportSources(
+  node: Parser.SyntaxNode,
+  language: LanguageDefinition,
+  options: { expandPythonSubmodules: boolean }
+): string[] {
   if (language.name === 'python') {
-    const pythonSources = findPythonImportSources(node);
+    const pythonSources = findPythonImportSources(node, options);
     if (pythonSources.length > 0) {
       return pythonSources;
     }
@@ -1167,7 +1171,7 @@ function isRelativeImportSource(source: string): boolean {
   return source.startsWith('.') || source.startsWith('/');
 }
 
-function findPythonImportSources(node: Parser.SyntaxNode): string[] {
+function findPythonImportSources(node: Parser.SyntaxNode, options: { expandPythonSubmodules: boolean }): string[] {
   if (node.type === 'import_from_statement') {
     const moduleNode = node.childForFieldName('module_name');
     if (!moduleNode) {
@@ -1176,6 +1180,9 @@ function findPythonImportSources(node: Parser.SyntaxNode): string[] {
 
     const moduleSource = normalizeImportSource(moduleNode.text);
     const nameNodes = findChildrenByFieldName(node, 'name');
+    if (!options.expandPythonSubmodules || !moduleSource.startsWith('.')) {
+      return [moduleSource];
+    }
     if (/^\.+$/u.test(moduleSource) && nameNodes.length > 0) {
       return nameNodes.flatMap(findPythonImportNames).map((name) => `${moduleSource}${name}`);
     }
