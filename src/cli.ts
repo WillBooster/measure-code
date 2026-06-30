@@ -242,7 +242,7 @@ async function addTypeScriptProjectMetrics(
 
   const explicitConfigFile = options.tsconfig;
   const isExplicitConfig = explicitConfigFile !== undefined;
-  if (!isExplicitConfig && !result.files.some(({ file }) => isTypeScriptFile(file))) {
+  if (!isExplicitConfig && !result.files.some(({ file }) => isTypeScriptProjectCandidateFile(file))) {
     return;
   }
 
@@ -268,8 +268,8 @@ async function addTypeScriptProjectMetrics(
   }
 }
 
-function isTypeScriptFile(file: string): boolean {
-  return ['.cts', '.mts', '.ts', '.tsx'].includes(path.extname(file));
+function isTypeScriptProjectCandidateFile(file: string): boolean {
+  return ['.cjs', '.cts', '.js', '.jsx', '.mjs', '.mts', '.ts', '.tsx'].includes(path.extname(file));
 }
 
 async function findNearestTsconfig(target: string): Promise<string | undefined> {

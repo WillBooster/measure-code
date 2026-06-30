@@ -92,11 +92,19 @@ export async function measureTypeScriptProject(
         measuredFileSet.size === 0
           ? projectRootFiles
           : [...measuredFileByCanonicalFile.entries()].map(([canonicalFile, file]) => ({ canonicalFile, file }));
+      const configDirectory = path.dirname(project.configFileName);
+      const canonicalConfigDirectory = await canonicalizeFile(configDirectory);
       for (const { canonicalFile, file } of projectAnalysisFiles) {
         if (analyzedFiles.has(canonicalFile)) {
           continue;
         }
-        const sourceFile = await getProjectSourceFile(project, file, canonicalFile);
+        const sourceFile = await getProjectSourceFile(
+          project,
+          file,
+          canonicalFile,
+          configDirectory,
+          canonicalConfigDirectory
+        );
         if (!sourceFile) {
           continue;
         }
@@ -137,9 +145,11 @@ export async function measureTypeScriptProject(
 async function getProjectSourceFile(
   project: { configFileName: string; program: { getSourceFile: (file: string) => Promise<SourceFile | undefined> } },
   file: string,
-  canonicalFile: string
+  canonicalFile: string,
+  configDirectory: string,
+  canonicalConfigDirectory: string
 ): Promise<SourceFile | undefined> {
-  for (const candidate of await getProjectFileCandidates(project.configFileName, file, canonicalFile)) {
+  for (const candidate of getProjectFileCandidates(file, canonicalFile, configDirectory, canonicalConfigDirectory)) {
     const sourceFile = await project.program.getSourceFile(candidate);
     if (sourceFile) {
       return sourceFile;
@@ -148,10 +158,13 @@ async function getProjectSourceFile(
   return undefined;
 }
 
-async function getProjectFileCandidates(configFile: string, file: string, canonicalFile: string): Promise<string[]> {
+function getProjectFileCandidates(
+  file: string,
+  canonicalFile: string,
+  configDirectory: string,
+  canonicalConfigDirectory: string
+): string[] {
   const candidates = new Set([file, canonicalFile]);
-  const configDirectory = path.dirname(configFile);
-  const canonicalConfigDirectory = await canonicalizeFile(configDirectory);
   if (canonicalFile.startsWith(`${canonicalConfigDirectory}${path.sep}`)) {
     candidates.add(path.join(configDirectory, path.relative(canonicalConfigDirectory, canonicalFile)));
   }
@@ -296,7 +309,7 @@ function findComponentFunctionNode(node: Node): Node {
     return unwrappedInitializer;
   }
   if (isComponentImplementationWrapperCall(unwrappedInitializer)) {
-    return findDirectFunctionLikeChild(unwrappedInitializer) ?? node;
+    return findComponentImplementationWrapperFunction(unwrappedInitializer) ?? node;
   }
   return node;
 }
@@ -316,11 +329,14 @@ function findCallExpressionName(expression: Node): string | undefined {
   return name ? findCandidateName(name) : findCandidateName(expression);
 }
 
-function findDirectFunctionLikeChild(node: Node): Node | undefined {
+function findComponentImplementationWrapperFunction(node: Node): Node | undefined {
   let functionNode: Node | undefined;
   node.forEachChild((child) => {
-    if (isFunctionLikeCandidate(child)) {
-      functionNode = child;
+    const unwrappedChild = unwrapExpression(child);
+    if (isFunctionLikeCandidate(unwrappedChild)) {
+      functionNode = unwrappedChild;
+    } else if (isComponentImplementationWrapperCall(unwrappedChild)) {
+      functionNode = findComponentImplementationWrapperFunction(unwrappedChild);
     }
     return functionNode;
   });
