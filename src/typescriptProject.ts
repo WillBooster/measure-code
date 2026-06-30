@@ -31,6 +31,10 @@ interface DiagnosticLike {
   fileName?: string;
 }
 
+interface ReactComponentCandidateMetric extends Omit<ReactComponentFunctionMetric, 'file'> {
+  implementationKey: string;
+}
+
 export async function measureTypeScriptProject(
   configFile: string,
   measuredFiles: readonly string[] = []
@@ -173,7 +177,7 @@ async function collectReactComponentFunctions(
   sourceFile: SourceFile,
   checker: Checker
 ): Promise<Omit<ReactComponentFunctionMetric, 'file'>[]> {
-  const components: Omit<ReactComponentFunctionMetric, 'file'>[] = [];
+  const components: ReactComponentCandidateMetric[] = [];
   const candidates = collectReactComponentCandidates(sourceFile);
   for (const candidate of candidates) {
     if (!(await isReactComponentCandidate(candidate, checker))) {
@@ -182,6 +186,7 @@ async function collectReactComponentFunctions(
     const name = findNameNode(candidate);
     const functionNode = findComponentFunctionNode(candidate);
     components.push({
+      implementationKey: `${functionNode.pos}:${functionNode.end}`,
       name: name ? findCandidateName(name) : undefined,
       startLine: lineAtPosition(sourceFile.text, getTokenPosOfNode(functionNode, sourceFile)),
     });
@@ -293,13 +298,19 @@ function findFirstFunctionLikeNode(node: Node): Node | undefined {
 }
 
 function dedupeReactComponentFunctions(
-  components: readonly Omit<ReactComponentFunctionMetric, 'file'>[]
+  components: readonly ReactComponentCandidateMetric[]
 ): Omit<ReactComponentFunctionMetric, 'file'>[] {
-  const componentByKey = new Map<string, Omit<ReactComponentFunctionMetric, 'file'>>();
+  const componentByKey = new Map<string, ReactComponentCandidateMetric>();
   for (const component of components) {
-    componentByKey.set(`${component.name ?? ''}:${component.startLine}`, component);
+    const existingComponent = componentByKey.get(component.implementationKey);
+    if (!existingComponent || (!existingComponent.name && component.name)) {
+      componentByKey.set(component.implementationKey, component);
+    }
   }
-  return [...componentByKey.values()];
+  return [...componentByKey.values()].map((component) => ({
+    name: component.name,
+    startLine: component.startLine,
+  }));
 }
 
 function findCandidateName(name: Node): string | undefined {

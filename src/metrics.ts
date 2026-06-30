@@ -572,7 +572,10 @@ function measureModule(root: Parser.SyntaxNode, language: LanguageDefinition): M
 }
 
 function collectModuleDeclarations(root: Parser.SyntaxNode): DeclarationMetrics[] {
-  return root.namedChildren.flatMap((child) => collectTopLevelDeclarations(child, false));
+  const exportedNames = collectExportedNames(root);
+  return root.namedChildren
+    .flatMap((child) => collectTopLevelDeclarations(child, false))
+    .map((declaration) => (exportedNames.has(declaration.name) ? { ...declaration, exported: true } : declaration));
 }
 
 function collectTopLevelDeclarations(node: Parser.SyntaxNode, exported: boolean): DeclarationMetrics[] {
@@ -644,6 +647,36 @@ function isDeclarationNameNode(node: Parser.SyntaxNode): boolean {
     node.type === 'property_identifier' ||
     node.type === 'field_identifier'
   );
+}
+
+function collectExportedNames(root: Parser.SyntaxNode): Set<string> {
+  const exportedNames = new Set<string>();
+
+  function visit(node: Parser.SyntaxNode): void {
+    if (isExportSpecifierNode(node)) {
+      const name = findExportedName(node);
+      if (name) {
+        exportedNames.add(name);
+      }
+    }
+
+    for (const child of node.namedChildren) {
+      visit(child);
+    }
+  }
+
+  visit(root);
+  return exportedNames;
+}
+
+function isExportSpecifierNode(node: Parser.SyntaxNode): boolean {
+  return node.type === 'export_specifier' || node.type === 'namespace_export';
+}
+
+function findExportedName(node: Parser.SyntaxNode): string | undefined {
+  const nameNode =
+    node.childForFieldName('name') ?? node.childForFieldName('alias') ?? node.namedChildren.find(isDeclarationNameNode);
+  return nameNode && isDeclarationNameNode(nameNode) ? nameNode.text : undefined;
 }
 
 function measureCoupling(root: Parser.SyntaxNode, language: LanguageDefinition): CouplingMetrics {
@@ -1145,6 +1178,10 @@ function findPythonImportSources(node: Parser.SyntaxNode): string[] {
     const nameNodes = findChildrenByFieldName(node, 'name');
     if (/^\.+$/u.test(moduleSource) && nameNodes.length > 0) {
       return nameNodes.flatMap(findPythonImportNames).map((name) => `${moduleSource}${name}`);
+    }
+    const submoduleSources = nameNodes.flatMap(findPythonImportNames).map((name) => `${moduleSource}.${name}`);
+    if (submoduleSources.length > 0) {
+      return [moduleSource, ...submoduleSources];
     }
     return [moduleSource];
   }
