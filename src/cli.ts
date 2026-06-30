@@ -53,10 +53,12 @@ interface RiskFinding {
 
 interface ScanResult {
   architecture?: ArchitectureMetrics;
+  componentFunctionKeys?: Set<string>;
   displayRoot: string;
   errors: string[];
   fatalError?: string;
   files: FileMetrics[];
+  namedComponentFunctionKeys?: Set<string>;
   typeScriptProject?: TypeScriptProjectMetrics;
 }
 
@@ -101,9 +103,9 @@ const ignoredDirectoryNames = new Set([
 const testDirectoryNames = new Set(['__tests__', 'test', 'tests']);
 const testFilePattern = /(?:^test(?:[_-].*)?|\.(?:spec|test)|[_-]test)\.[^.]+$/iu;
 const transitiveDependencyThreshold = 20;
-const responsibilityBreadthThreshold = 6;
-const orchestrationScoreThreshold = 60;
-const processLifecycleThreshold = 8;
+const structuralBreadthThreshold = 6;
+const structuralCoordinationThreshold = 160;
+const stateMutationThreshold = 8;
 const duplicateSymbolGroupThreshold = 3;
 
 // oxlint-disable-next-line unicorn/prefer-top-level-await -- CommonJS build output cannot preserve top-level await.
@@ -142,7 +144,7 @@ async function main(): Promise<void> {
     )
     .option('--max-findings <number>', 'maximum number of risk findings to print', parsePositiveInteger, 20)
     .option('--include-tests', 'include test files and test directories')
-    .option('--tsconfig <path>', 'measure TypeScript project metrics with tsgo unstable API')
+    .option('--tsconfig <path>', 'TypeScript project file to use instead of auto-detected tsconfig.json')
     .option('--json', 'print JSON output')
     .option('--fail-on-error', 'exit with code 1 when files or directories cannot be scanned')
     .option('--fail-on-risk', 'exit with code 1 when high-risk findings are found');
@@ -151,8 +153,15 @@ async function main(): Promise<void> {
     const resolvedTarget = resolveTarget(target);
     const result = await scanTarget(resolvedTarget, options);
     await addArchitectureMetrics(result);
-    await addTypeScriptProjectMetrics(result, options);
-    const risks = findRiskyFunctions(result.files, result.architecture, options, result.displayRoot);
+    await addTypeScriptProjectMetrics(result, options, resolvedTarget);
+    const risks = findRiskyFunctions(
+      result.files,
+      result.architecture,
+      result.componentFunctionKeys,
+      result.namedComponentFunctionKeys,
+      options,
+      result.displayRoot
+    );
 
     if (options.json) {
       printJson(result, risks, options);
@@ -221,26 +230,89 @@ async function scanTarget(target: string, options: CliOptions): Promise<ScanResu
   return { displayRoot: canonicalTarget, files, errors };
 }
 
-async function addTypeScriptProjectMetrics(result: ScanResult, options: CliOptions): Promise<void> {
-  if (!options.tsconfig) {
+async function addTypeScriptProjectMetrics(
+  result: ScanResult,
+  options: CliOptions,
+  resolvedTarget: string
+): Promise<void> {
+  if (result.fatalError) {
+    return;
+  }
+  if (result.files.length === 0) {
     return;
   }
 
-  const configFile = resolveTarget(options.tsconfig);
+  const explicitConfigFile = options.tsconfig;
+  const isExplicitConfig = explicitConfigFile !== undefined;
+  if (!isExplicitConfig && !result.files.some(({ file }) => isTypeScriptProjectCandidateFile(file))) {
+    return;
+  }
+
+  const configFile = explicitConfigFile ? resolveTarget(explicitConfigFile) : await findNearestTsconfig(resolvedTarget);
+  if (!configFile) {
+    return;
+  }
+
   try {
     result.typeScriptProject = await measureTypeScriptProject(
       configFile,
       result.files.map(({ file }) => file)
     );
+    result.componentFunctionKeys = new Set(
+      result.typeScriptProject.reactComponentFunctions.map((component) =>
+        functionLocationKey(component.file, component.startLine, component.startColumn)
+      )
+    );
+    result.namedComponentFunctionKeys = new Set(
+      result.typeScriptProject.reactComponentFunctions.flatMap((component) =>
+        component.name ? [functionNameLocationKey(component.file, component.name, component.startLine)] : []
+      )
+    );
   } catch (error) {
-    result.errors.push(`${formatPath(configFile, result.displayRoot)}: ${formatError(error)}`);
+    if (isExplicitConfig) {
+      result.errors.push(`${formatPath(configFile, result.displayRoot)}: ${formatError(error)}`);
+    }
+  }
+}
+
+function isTypeScriptProjectCandidateFile(file: string): boolean {
+  return ['.cjs', '.cts', '.js', '.jsx', '.mjs', '.mts', '.ts', '.tsx'].includes(path.extname(file));
+}
+
+async function findNearestTsconfig(target: string): Promise<string | undefined> {
+  const targetStat = await stat(target);
+  let currentDirectory = targetStat.isDirectory() ? target : path.dirname(target);
+  while (true) {
+    const configFile = path.join(currentDirectory, 'tsconfig.json');
+    if (await fileExists(configFile)) {
+      return configFile;
+    }
+
+    const parentDirectory = path.dirname(currentDirectory);
+    if (parentDirectory === currentDirectory) {
+      return undefined;
+    }
+    currentDirectory = parentDirectory;
+  }
+}
+
+async function fileExists(file: string): Promise<boolean> {
+  try {
+    const fileStat = await stat(file);
+    return fileStat.isFile();
+  } catch {
+    return false;
   }
 }
 
 async function addArchitectureMetrics(result: ScanResult): Promise<void> {
+  if (result.fatalError) {
+    return;
+  }
+
   try {
-    result.architecture = await measureArchitecture(
-      result.files.map(({ file }) => file),
+    result.architecture = measureArchitecture(
+      result.files.map(({ file, metrics }) => ({ file, metrics })),
       result.displayRoot
     );
   } catch (error) {
@@ -409,13 +481,25 @@ async function measureFile(
 function findRiskyFunctions(
   files: FileMetrics[],
   architecture: ArchitectureMetrics | undefined,
+  componentFunctionKeys: Set<string> | undefined,
+  namedComponentFunctionKeys: Set<string> | undefined,
   options: CliOptions,
   displayRoot: string
 ): RiskFinding[] {
   const architectureByFile = new Map(architecture?.files.map((file) => [file.file, file]));
   const findings = files.flatMap(({ file, metrics }) => [
     ...findRiskyFileMetrics(file, metrics, architectureByFile.get(formatPath(file, displayRoot)), options, displayRoot),
-    ...metrics.functions.flatMap((fn) => findRiskyFunctionMetrics(file, metrics.language, fn, options, displayRoot)),
+    ...metrics.functions.flatMap((fn) =>
+      findRiskyFunctionMetrics(
+        file,
+        metrics.language,
+        fn,
+        options,
+        displayRoot,
+        componentFunctionKeys,
+        namedComponentFunctionKeys
+      )
+    ),
   ]);
 
   findings.sort(compareRiskFindings);
@@ -434,7 +518,8 @@ function findRiskyFileMetrics(
   addTrigger(triggers, 'file LOC', metrics.lines.code, options.fileLocThreshold);
   addTrigger(triggers, 'import sources', metrics.coupling.importSourceCount, options.importThreshold);
   if (architecture) {
-    if (metrics.lines.code >= 100 || architecture.directLocalDependencyCount >= 8) {
+    const hasFileScaleRisk = metrics.lines.code >= 100 || architecture.directLocalDependencyCount >= 8;
+    if (hasFileScaleRisk) {
       addTrigger(
         triggers,
         'transitive local dependencies',
@@ -442,18 +527,24 @@ function findRiskyFileMetrics(
         transitiveDependencyThreshold
       );
     }
+    if (
+      triggers.length > 0 ||
+      architecture.directLocalDependencyCount >= 8 ||
+      architecture.structuralCoordination.score >= structuralCoordinationThreshold
+    ) {
+      addTrigger(triggers, 'structural breadth', architecture.structuralBreadthScore, structuralBreadthThreshold);
+    }
     addTrigger(
       triggers,
-      'responsibility breadth',
-      architecture.responsibilityBreadthScore,
-      responsibilityBreadthThreshold
+      'structural coordination',
+      architecture.structuralCoordination.score,
+      structuralCoordinationThreshold
     );
-    addTrigger(triggers, 'orchestration score', architecture.orchestration.score, orchestrationScoreThreshold);
     addTrigger(
       triggers,
-      'process lifecycle score',
-      architecture.orchestration.processLifecycleScore,
-      processLifecycleThreshold
+      'state mutation',
+      architecture.structuralCoordination.stateMutationScore,
+      stateMutationThreshold
     );
     addTrigger(
       triggers,
@@ -484,10 +575,12 @@ function findRiskyFunctionMetrics(
   language: LanguageName,
   fn: FunctionMetrics,
   options: CliOptions,
-  displayRoot: string
+  displayRoot: string,
+  componentFunctionKeys?: Set<string>,
+  namedComponentFunctionKeys?: Set<string>
 ): RiskFinding[] {
   const loc = fn.endLine - fn.startLine + 1;
-  const isComponent = isReactComponent(language, fn);
+  const isComponent = isReactComponent(file, fn, componentFunctionKeys, namedComponentFunctionKeys);
   const kind = isComponent ? 'component' : 'function';
   const triggers: RiskTrigger[] = [];
   addTrigger(triggers, 'cognitive complexity', fn.cognitiveComplexity, options.cognitiveThreshold);
@@ -523,16 +616,29 @@ function addTrigger(triggers: RiskTrigger[], metric: string, value: number, thre
   triggers.push({ metric, value, threshold, score: value / threshold });
 }
 
-function isReactComponent(language: LanguageName, fn: FunctionMetrics): boolean {
-  return isJavaScriptLikeLanguage(language) && fn.returnsJsx && fn.name !== undefined && /^[A-Z]/u.test(fn.name);
-}
-
-function isJavaScriptLikeLanguage(language: LanguageName): boolean {
-  return language === 'javascript' || language === 'jsx' || language === 'typescript' || language === 'tsx';
+function isReactComponent(
+  file: string,
+  fn: FunctionMetrics,
+  componentFunctionKeys: Set<string> | undefined,
+  namedComponentFunctionKeys: Set<string> | undefined
+): boolean {
+  return (
+    componentFunctionKeys?.has(functionLocationKey(file, fn.startLine, fn.startColumn)) ||
+    (fn.name ? namedComponentFunctionKeys?.has(functionNameLocationKey(file, fn.name, fn.startLine)) : false) ||
+    false
+  );
 }
 
 function getLocThreshold(isComponent: boolean, options: CliOptions): number {
   return isComponent ? options.componentLocThreshold : options.functionLocThreshold;
+}
+
+function functionLocationKey(file: string, startLine: number, startColumn: number): string {
+  return `${path.resolve(file)}:${startLine}:${startColumn}`;
+}
+
+function functionNameLocationKey(file: string, name: string, startLine: number): string {
+  return `${path.resolve(file)}:${name}:${startLine}`;
 }
 
 function maxTriggerScore(triggers: RiskTrigger[]): number {
@@ -566,9 +672,9 @@ function printJson(result: ScanResult, risks: RiskFinding[], options: CliOptions
           functionLoc: options.functionLocThreshold,
           importSources: options.importThreshold,
           duplicateSymbolGroups: duplicateSymbolGroupThreshold,
-          orchestrationScore: orchestrationScoreThreshold,
-          processLifecycleScore: processLifecycleThreshold,
-          responsibilityBreadth: responsibilityBreadthThreshold,
+          stateMutation: stateMutationThreshold,
+          structuralBreadth: structuralBreadthThreshold,
+          structuralCoordination: structuralCoordinationThreshold,
           transitiveLocalDependencies: transitiveDependencyThreshold,
         },
         totalRisks: risks.length,
@@ -657,8 +763,11 @@ function formatMetricValue(value: number): string {
 }
 
 function formatArchitectureMetrics(metrics: ArchitectureMetrics): string {
-  const maxProcessLifecycleScore = Math.max(...metrics.files.map((file) => file.orchestration.processLifecycleScore));
-  return `Architecture max reachable files ${metrics.maxTransitiveLocalDependencyCount}, max responsibility breadth ${metrics.maxResponsibilityBreadthScore}, max orchestration score ${metrics.maxOrchestrationScore}, max process lifecycle score ${maxProcessLifecycleScore}, duplicate symbol groups ${metrics.duplicateSymbolGroups.length}`;
+  const maxStateMutationScore = Math.max(
+    0,
+    ...metrics.files.map((file) => file.structuralCoordination.stateMutationScore)
+  );
+  return `Architecture max reachable files ${metrics.maxTransitiveLocalDependencyCount}, max structural breadth ${metrics.maxStructuralBreadthScore}, max structural coordination ${metrics.maxStructuralCoordinationScore}, max state mutation ${maxStateMutationScore}, duplicate symbol groups ${metrics.duplicateSymbolGroups.length}`;
 }
 
 function formatTypeScriptProjectMetrics(metrics: TypeScriptProjectMetrics): string {
