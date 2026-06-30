@@ -101,9 +101,9 @@ const ignoredDirectoryNames = new Set([
 const testDirectoryNames = new Set(['__tests__', 'test', 'tests']);
 const testFilePattern = /(?:^test(?:[_-].*)?|\.(?:spec|test)|[_-]test)\.[^.]+$/iu;
 const transitiveDependencyThreshold = 20;
-const responsibilityBreadthThreshold = 6;
-const orchestrationScoreThreshold = 60;
-const processLifecycleThreshold = 8;
+const structuralBreadthThreshold = 6;
+const structuralCoordinationThreshold = 160;
+const stateMutationThreshold = 8;
 const duplicateSymbolGroupThreshold = 3;
 
 // oxlint-disable-next-line unicorn/prefer-top-level-await -- CommonJS build output cannot preserve top-level await.
@@ -239,8 +239,8 @@ async function addTypeScriptProjectMetrics(result: ScanResult, options: CliOptio
 
 async function addArchitectureMetrics(result: ScanResult): Promise<void> {
   try {
-    result.architecture = await measureArchitecture(
-      result.files.map(({ file }) => file),
+    result.architecture = measureArchitecture(
+      result.files.map(({ file, metrics }) => ({ file, metrics })),
       result.displayRoot
     );
   } catch (error) {
@@ -442,18 +442,18 @@ function findRiskyFileMetrics(
         transitiveDependencyThreshold
       );
     }
+    addTrigger(triggers, 'structural breadth', architecture.structuralBreadthScore, structuralBreadthThreshold);
     addTrigger(
       triggers,
-      'responsibility breadth',
-      architecture.responsibilityBreadthScore,
-      responsibilityBreadthThreshold
+      'structural coordination',
+      architecture.structuralCoordination.score,
+      structuralCoordinationThreshold
     );
-    addTrigger(triggers, 'orchestration score', architecture.orchestration.score, orchestrationScoreThreshold);
     addTrigger(
       triggers,
-      'process lifecycle score',
-      architecture.orchestration.processLifecycleScore,
-      processLifecycleThreshold
+      'state mutation',
+      architecture.structuralCoordination.stateMutationScore,
+      stateMutationThreshold
     );
     addTrigger(
       triggers,
@@ -566,9 +566,9 @@ function printJson(result: ScanResult, risks: RiskFinding[], options: CliOptions
           functionLoc: options.functionLocThreshold,
           importSources: options.importThreshold,
           duplicateSymbolGroups: duplicateSymbolGroupThreshold,
-          orchestrationScore: orchestrationScoreThreshold,
-          processLifecycleScore: processLifecycleThreshold,
-          responsibilityBreadth: responsibilityBreadthThreshold,
+          stateMutation: stateMutationThreshold,
+          structuralBreadth: structuralBreadthThreshold,
+          structuralCoordination: structuralCoordinationThreshold,
           transitiveLocalDependencies: transitiveDependencyThreshold,
         },
         totalRisks: risks.length,
@@ -657,8 +657,10 @@ function formatMetricValue(value: number): string {
 }
 
 function formatArchitectureMetrics(metrics: ArchitectureMetrics): string {
-  const maxProcessLifecycleScore = Math.max(...metrics.files.map((file) => file.orchestration.processLifecycleScore));
-  return `Architecture max reachable files ${metrics.maxTransitiveLocalDependencyCount}, max responsibility breadth ${metrics.maxResponsibilityBreadthScore}, max orchestration score ${metrics.maxOrchestrationScore}, max process lifecycle score ${maxProcessLifecycleScore}, duplicate symbol groups ${metrics.duplicateSymbolGroups.length}`;
+  const maxStateMutationScore = Math.max(
+    ...metrics.files.map((file) => file.structuralCoordination.stateMutationScore)
+  );
+  return `Architecture max reachable files ${metrics.maxTransitiveLocalDependencyCount}, max structural breadth ${metrics.maxStructuralBreadthScore}, max structural coordination ${metrics.maxStructuralCoordinationScore}, max state mutation ${maxStateMutationScore}, duplicate symbol groups ${metrics.duplicateSymbolGroups.length}`;
 }
 
 function formatTypeScriptProjectMetrics(metrics: TypeScriptProjectMetrics): string {

@@ -16,7 +16,7 @@ A library for measuring code metrics with tree-sitter.
 - Intra-file call graph metrics, including call counts, fan-in/fan-out, recursion, and call depth
 - File coupling metrics from imports and exports
 - File cohesion metrics from shared function identifiers
-- Architecture metrics, including transitive local dependencies, orchestration score, process lifecycle score, responsibility breadth, and cross-file duplicate symbols
+- Architecture metrics, including transitive local dependencies, structural coordination, structural breadth, state mutation, and cross-file duplicate symbols
 - TypeScript type-shape metrics, including annotations, aliases, interfaces, generics, unions, intersections, assertions, and conditional types
 - Halstead metrics
 - Maintainability index
@@ -51,4 +51,4 @@ console.log(metrics.cyclomaticComplexity);
 measure-code ~/ghq/github.com/WillBoosterLab/exercode
 ```
 
-The CLI scans JavaScript, JSX, TypeScript, TSX, Python, and Go files, skips generated/vendor/test/fixture/tool directories by default, and reports high-risk files, functions, and React components. The default thresholds are file code LOC >= 300, function physical LOC span >= 80, component physical LOC span >= 250, cognitive complexity >= 15, cyclomatic complexity >= 20, function calls >= 50, import sources >= 20, and intra-file fan-out >= 8. Use `--include-tests` to include test files, `--json` for machine-readable output, `--max-findings` to control report length, `--fail-on-risk` or `--fail-on-error` for CI, `--tsconfig <path>` to add TypeScript project metrics from the tsgo unstable API, or tune the defaults with the threshold options.
+The CLI scans JavaScript, JSX, TypeScript, TSX, Python, and Go files, skips generated/vendor/test/fixture/tool directories by default, and reports high-risk files, functions, and React components. The default thresholds are file code LOC >= 300, function physical LOC span >= 80, component physical LOC span >= 250, cognitive complexity >= 15, cyclomatic complexity >= 20, function calls >= 50, import sources >= 20, and intra-file fan-out >= 8. Use `--include-tests` to include test files, `--json` for machine-readable output, `--max-findings` to control report length, `--fail-on-risk` or `--fail-on-error` for CI, `--tsconfig <path>` to add TypeScript project metrics from the tsgo unstable API, or tune the defaults with the threshold options. Architecture findings are derived from syntax-tree metrics such as declarations, imports, control flow, call graph shape, and assignments rather than keyword matching.

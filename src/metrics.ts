@@ -5,11 +5,14 @@ import type {
   CodeMetrics,
   CohesionMetrics,
   CouplingMetrics,
+  DeclarationMetrics,
   FunctionMetrics,
   HalsteadMetrics,
   LanguageDefinition,
   LanguageName,
   MeasureOptions,
+  ModuleMetrics,
+  SyntaxFeatureMetrics,
   TypeComplexityMetrics,
 } from './types.js';
 
@@ -100,6 +103,8 @@ interface StructuralMetrics {
   cohesion: CohesionMetrics;
   coupling: CouplingMetrics;
   functions: FunctionMetrics[];
+  module: ModuleMetrics;
+  syntaxFeatures: SyntaxFeatureMetrics;
   typeComplexity: TypeComplexityMetrics;
 }
 
@@ -150,7 +155,9 @@ export class TreeMeasurer {
       nestingDepth: globalComplexity.nestingDepth,
       callGraph: structuralMetrics.callGraph,
       coupling: structuralMetrics.coupling,
+      module: structuralMetrics.module,
       cohesion: structuralMetrics.cohesion,
+      syntaxFeatures: structuralMetrics.syntaxFeatures,
       typeComplexity: structuralMetrics.typeComplexity,
       halstead,
       maintainabilityIndex: calculateMaintainabilityIndex(
@@ -194,7 +201,9 @@ function measureStructuralMetrics(
     functions: functionsWithGraph,
     callGraph: callGraph.metrics,
     coupling: measureCoupling(root, language),
+    module: measureModule(root, language),
     cohesion: measureCohesion(analyses),
+    syntaxFeatures: measureSyntaxFeatures(root),
     typeComplexity: measureTypeComplexity(root),
   };
 }
@@ -539,6 +548,97 @@ function containsOwnReturnNode(
   return visit(root, true);
 }
 
+function measureModule(root: Parser.SyntaxNode, language: LanguageDefinition): ModuleMetrics {
+  const importSources = new Set<string>();
+
+  function visitImports(node: Parser.SyntaxNode): void {
+    if (isImportNode(node)) {
+      for (const source of findImportSources(node, language)) {
+        importSources.add(source);
+      }
+    }
+
+    for (const child of node.namedChildren) {
+      visitImports(child);
+    }
+  }
+
+  visitImports(root);
+
+  return {
+    declarations: collectModuleDeclarations(root),
+    importSources: [...importSources],
+  };
+}
+
+function collectModuleDeclarations(root: Parser.SyntaxNode): DeclarationMetrics[] {
+  return root.namedChildren.flatMap((child) => collectTopLevelDeclarations(child, false));
+}
+
+function collectTopLevelDeclarations(node: Parser.SyntaxNode, exported: boolean): DeclarationMetrics[] {
+  if (isModuleExportNode(node)) {
+    return node.namedChildren.flatMap((child) => collectTopLevelDeclarations(child, true));
+  }
+
+  if (isVariableDeclarationContainer(node)) {
+    return node.namedChildren.flatMap((child) =>
+      child.type === 'variable_declarator' ? declarationFromNode(child, exported) : []
+    );
+  }
+
+  return declarationFromNode(node, exported);
+}
+
+function declarationFromNode(node: Parser.SyntaxNode, exported: boolean): DeclarationMetrics[] {
+  if (!isTopLevelDeclarationNode(node)) {
+    return [];
+  }
+
+  const name = findDeclarationName(node);
+  return name ? [{ exported, name, startLine: node.startPosition.row + 1 }] : [];
+}
+
+function findDeclarationName(node: Parser.SyntaxNode): string | undefined {
+  const nameNode = node.childForFieldName('name');
+  if (nameNode) {
+    return nameNode.text;
+  }
+
+  return node.namedChildren.find(isDeclarationNameNode)?.text;
+}
+
+function isModuleExportNode(node: Parser.SyntaxNode): boolean {
+  return node.type === 'export_statement' || node.type === 'export_declaration';
+}
+
+function isVariableDeclarationContainer(node: Parser.SyntaxNode): boolean {
+  return node.type === 'lexical_declaration' || node.type === 'variable_declaration';
+}
+
+function isTopLevelDeclarationNode(node: Parser.SyntaxNode): boolean {
+  return (
+    node.type === 'function_declaration' ||
+    node.type === 'function_definition' ||
+    node.type === 'function_item' ||
+    node.type === 'method_declaration' ||
+    node.type === 'class_declaration' ||
+    node.type === 'class_definition' ||
+    node.type === 'interface_declaration' ||
+    node.type === 'type_alias_declaration' ||
+    node.type === 'type_declaration' ||
+    node.type === 'variable_declarator'
+  );
+}
+
+function isDeclarationNameNode(node: Parser.SyntaxNode): boolean {
+  return (
+    node.type === 'identifier' ||
+    node.type === 'type_identifier' ||
+    node.type === 'property_identifier' ||
+    node.type === 'field_identifier'
+  );
+}
+
 function measureCoupling(root: Parser.SyntaxNode, language: LanguageDefinition): CouplingMetrics {
   const importSources = new Set<string>();
   let importCount = 0;
@@ -572,6 +672,87 @@ function measureCoupling(root: Parser.SyntaxNode, language: LanguageDefinition):
     externalImportCount: importSources.size - relativeImportCount,
     exportCount,
   };
+}
+
+function measureSyntaxFeatures(root: Parser.SyntaxNode): SyntaxFeatureMetrics {
+  const metrics: SyntaxFeatureMetrics = {
+    assignmentCount: 0,
+    awaitExpressionCount: 0,
+    loopStatementCount: 0,
+    mutableBindingCount: 0,
+    returnStatementCount: 0,
+    throwStatementCount: 0,
+    tryStatementCount: 0,
+  };
+
+  function visit(node: Parser.SyntaxNode): void {
+    if (isAssignmentNode(node)) {
+      metrics.assignmentCount += 1;
+    }
+    if (isAwaitNode(node)) {
+      metrics.awaitExpressionCount += 1;
+    }
+    if (isLoopNode(node)) {
+      metrics.loopStatementCount += 1;
+    }
+    if (isMutableBindingNode(node)) {
+      metrics.mutableBindingCount += 1;
+    }
+    if (isReturnNode(node)) {
+      metrics.returnStatementCount += 1;
+    }
+    if (isThrowNode(node)) {
+      metrics.throwStatementCount += 1;
+    }
+    if (isTryNode(node)) {
+      metrics.tryStatementCount += 1;
+    }
+
+    for (const child of node.namedChildren) {
+      visit(child);
+    }
+  }
+
+  visit(root);
+  return metrics;
+}
+
+function isAssignmentNode(node: Parser.SyntaxNode): boolean {
+  return (
+    node.type === 'assignment_expression' ||
+    node.type === 'augmented_assignment_expression' ||
+    node.type === 'assignment_statement' ||
+    node.type === 'short_var_declaration'
+  );
+}
+
+function isAwaitNode(node: Parser.SyntaxNode): boolean {
+  return node.type === 'await_expression' || node.type === 'await';
+}
+
+function isLoopNode(node: Parser.SyntaxNode): boolean {
+  return (
+    node.type === 'for_statement' ||
+    node.type === 'for_in_statement' ||
+    node.type === 'while_statement' ||
+    node.type === 'do_statement'
+  );
+}
+
+function isMutableBindingNode(node: Parser.SyntaxNode): boolean {
+  return node.type === 'lexical_declaration' && node.firstChild?.text === 'let';
+}
+
+function isReturnNode(node: Parser.SyntaxNode): boolean {
+  return node.type === 'return_statement';
+}
+
+function isThrowNode(node: Parser.SyntaxNode): boolean {
+  return node.type === 'throw_statement' || node.type === 'raise_statement';
+}
+
+function isTryNode(node: Parser.SyntaxNode): boolean {
+  return node.type === 'try_statement';
 }
 
 function measureCohesion(analyses: FunctionAnalysis[]): CohesionMetrics {

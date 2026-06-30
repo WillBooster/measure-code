@@ -72,10 +72,31 @@ export interface CouplingMetrics {
   exportCount: number;
 }
 
+export interface DeclarationMetrics {
+  exported: boolean;
+  name: string;
+  startLine: number;
+}
+
+export interface ModuleMetrics {
+  declarations: DeclarationMetrics[];
+  importSources: string[];
+}
+
 export interface CohesionMetrics {
   averageFunctionIdentifierOverlap: number;
   sharedIdentifierCount: number;
   uniqueIdentifierCount: number;
+}
+
+export interface SyntaxFeatureMetrics {
+  assignmentCount: number;
+  awaitExpressionCount: number;
+  loopStatementCount: number;
+  mutableBindingCount: number;
+  returnStatementCount: number;
+  throwStatementCount: number;
+  tryStatementCount: number;
 }
 
 export interface TypeComplexityMetrics {
@@ -105,7 +126,9 @@ export interface CodeMetrics {
   nestingDepth: number;
   callGraph: CallGraphMetrics;
   coupling: CouplingMetrics;
+  module: ModuleMetrics;
   cohesion: CohesionMetrics;
+  syntaxFeatures: SyntaxFeatureMetrics;
   typeComplexity: TypeComplexityMetrics;
   halstead: HalsteadMetrics;
   maintainabilityIndex: number;

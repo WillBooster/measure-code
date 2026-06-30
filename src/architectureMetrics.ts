@@ -1,13 +1,18 @@
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import type { CodeMetrics, DeclarationMetrics } from './types.js';
+
+export interface ArchitectureSourceFile {
+  file: string;
+  metrics: CodeMetrics;
+}
 
 export interface ArchitectureFileMetrics {
   directLocalDependencyCount: number;
   duplicateSymbolGroupCount: number;
   file: string;
-  orchestration: OrchestrationMetrics;
-  responsibilityBreadthScore: number;
-  responsibilityDomains: string[];
+  structuralBreadthScore: number;
+  structuralCoordination: StructuralCoordinationMetrics;
+  structuralFeatureGroups: string[];
   transitiveLocalDependencyCount: number;
 }
 
@@ -16,8 +21,8 @@ export interface ArchitectureMetrics {
   files: ArchitectureFileMetrics[];
   maxDirectLocalDependencyCount: number;
   maxDuplicateSymbolGroupCount: number;
-  maxOrchestrationScore: number;
-  maxResponsibilityBreadthScore: number;
+  maxStructuralBreadthScore: number;
+  maxStructuralCoordinationScore: number;
   maxTransitiveLocalDependencyCount: number;
 }
 
@@ -32,74 +37,43 @@ export interface DuplicateSymbolDeclaration {
   line: number;
 }
 
-export interface OrchestrationMetrics {
-  awaitCount: number;
-  earlyReturnCount: number;
-  mutableStateCount: number;
-  processLifecycleScore: number;
-  retryLoopCount: number;
+export interface StructuralCoordinationMetrics {
+  asyncBoundaryCount: number;
+  branchingScore: number;
+  exceptionHandlingCount: number;
+  moduleInteractionScore: number;
   score: number;
-  sideEffectCallCount: number;
-  tryFinallyCount: number;
+  stateMutationScore: number;
 }
 
 interface SourceFile {
   file: string;
+  metrics: CodeMetrics;
   relativeFile: string;
-  text: string;
 }
 
-const importSourcePattern =
-  /(?:import|export)\s+(?:type\s+)?(?:[^'";]*?\s+from\s+)?['"]([^'"]+)['"]|import\(['"]([^'"]+)['"]\)/gu;
-const symbolPattern =
-  /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(|^(?:export\s+)?const\s+([A-Z][A-Z0-9_]{3,}|[A-Za-z_$][\w$]{3,})\s*=|^(?:export\s+)?(?:class|interface|type)\s+([A-Za-z_$][\w$]*)\b/gmu;
-const duplicateSymbolStoplist = new Set([
-  'args',
-  'error',
-  'formatError',
-  'message',
-  'name',
-  'options',
-  'output',
-  'PackageJson',
-  'parsed',
-  'proc',
-  'readPackageJson',
-  'response',
-  'result',
-  'runCommand',
-  'RunCommandOptions',
-  'sleep',
-]);
-
-const responsibilityDomains = new Map<string, RegExp>([
-  ['agent', /\b(agent|codex|claude|antigravity|thread|prompt)\b/iu],
-  ['callback', /\b(callback|server|post|request|response|url)\b/iu],
-  ['ci', /\b(ci|check|workflow|job|run|failed|passed|pending)\b/iu],
-  ['git', /\b(git|branch|commit|merge|pullRequest|pr)\b/iu],
-  ['github', /\b(github|octokit|graphql|issue|repository)\b/iu],
-  ['log', /\b(log|logger|stderr|stdout|progress|output)\b/iu],
-  ['terminal', /\b(terminal|spawn|ansi|escape|paste|tty|process)\b/iu],
-  ['verification', /\b(verify|verification|test|behaviorCheck)\b/iu],
-  ['workspace', /\b(workspace|worktree|cwd|path|directory)\b/iu],
-]);
-
-export async function measureArchitecture(files: readonly string[], displayRoot: string): Promise<ArchitectureMetrics> {
-  const sourceFiles = await readSourceFiles(files, displayRoot);
+export function measureArchitecture(
+  files: readonly ArchitectureSourceFile[],
+  displayRoot: string
+): ArchitectureMetrics {
+  const sourceFiles = files.map((file) => ({
+    ...file,
+    relativeFile: path.relative(displayRoot, file.file) || path.basename(file.file),
+  }));
   const dependencyGraph = measureDependencyGraph(sourceFiles);
   const duplicateSymbolGroups = measureDuplicateSymbolGroups(sourceFiles);
   const duplicateGroupCountByFile = measureDuplicateGroupCountByFile(duplicateSymbolGroups);
   const metrics = sourceFiles.map((sourceFile) => {
     const directDependencies = dependencyGraph.get(sourceFile.relativeFile) ?? new Set<string>();
-    const orchestration = measureOrchestration(sourceFile.text);
-    const domains = measureResponsibilityDomains(sourceFile);
+    const structuralCoordination = measureStructuralCoordination(sourceFile.metrics);
+    const structuralFeatureGroups = measureStructuralFeatureGroups(sourceFile.metrics);
     return {
       file: sourceFile.relativeFile,
       directLocalDependencyCount: directDependencies.size,
       duplicateSymbolGroupCount: duplicateGroupCountByFile.get(sourceFile.relativeFile) ?? 0,
-      orchestration,
-      responsibilityBreadthScore: domains.length,
-      responsibilityDomains: domains,
+      structuralBreadthScore: structuralFeatureGroups.length,
+      structuralCoordination,
+      structuralFeatureGroups,
       transitiveLocalDependencyCount: measureTransitiveDependencyCount(sourceFile.relativeFile, dependencyGraph),
     };
   });
@@ -109,20 +83,10 @@ export async function measureArchitecture(files: readonly string[], displayRoot:
     files: metrics,
     maxDirectLocalDependencyCount: maxFileMetric(metrics, 'directLocalDependencyCount'),
     maxDuplicateSymbolGroupCount: maxFileMetric(metrics, 'duplicateSymbolGroupCount'),
-    maxOrchestrationScore: Math.max(0, ...metrics.map((file) => file.orchestration.score)),
-    maxResponsibilityBreadthScore: maxFileMetric(metrics, 'responsibilityBreadthScore'),
+    maxStructuralBreadthScore: maxFileMetric(metrics, 'structuralBreadthScore'),
+    maxStructuralCoordinationScore: Math.max(0, ...metrics.map((file) => file.structuralCoordination.score)),
     maxTransitiveLocalDependencyCount: maxFileMetric(metrics, 'transitiveLocalDependencyCount'),
   };
-}
-
-async function readSourceFiles(files: readonly string[], displayRoot: string): Promise<SourceFile[]> {
-  return await Promise.all(
-    files.map(async (file) => ({
-      file,
-      relativeFile: path.relative(displayRoot, file) || path.basename(file),
-      text: await readFile(file, 'utf8'),
-    }))
-  );
 }
 
 function measureDependencyGraph(files: SourceFile[]): Map<string, Set<string>> {
@@ -130,7 +94,7 @@ function measureDependencyGraph(files: SourceFile[]): Map<string, Set<string>> {
   const graph = new Map<string, Set<string>>();
   for (const file of files) {
     const dependencies = new Set<string>();
-    for (const source of importSources(file.text)) {
+    for (const source of file.metrics.module.importSources) {
       const resolved = resolveLocalImport(file.relativeFile, source, fileSet);
       if (resolved) {
         dependencies.add(resolved);
@@ -139,13 +103,6 @@ function measureDependencyGraph(files: SourceFile[]): Map<string, Set<string>> {
     graph.set(file.relativeFile, dependencies);
   }
   return graph;
-}
-
-function importSources(text: string): string[] {
-  importSourcePattern.lastIndex = 0;
-  return [...text.matchAll(importSourcePattern)]
-    .map((match) => match[1] ?? match[2])
-    .filter((source): source is string => source !== undefined && source.length > 0);
 }
 
 function resolveLocalImport(fromFile: string, source: string, fileSet: Set<string>): string | undefined {
@@ -191,37 +148,28 @@ function measureTransitiveDependencyCount(file: string, graph: Map<string, Set<s
 function measureDuplicateSymbolGroups(files: SourceFile[]): DuplicateSymbolGroup[] {
   const declarationsBySymbol = new Map<string, DuplicateSymbolDeclaration[]>();
   for (const file of files) {
-    symbolPattern.lastIndex = 0;
-    for (const match of file.text.matchAll(symbolPattern)) {
-      const symbol = match[1] ?? match[2] ?? match[3];
-      if (!isMeaningfulDuplicateSymbol(symbol)) {
-        continue;
-      }
-      const declarations = declarationsBySymbol.get(symbol) ?? [];
-      declarations.push({ file: file.relativeFile, line: lineAtOffset(file.text, match.index ?? 0) });
-      declarationsBySymbol.set(symbol, declarations);
+    for (const declaration of file.metrics.module.declarations) {
+      const declarations = declarationsBySymbol.get(declaration.name) ?? [];
+      declarations.push(toDuplicateSymbolDeclaration(file.relativeFile, declaration));
+      declarationsBySymbol.set(declaration.name, declarations);
     }
   }
   return [...declarationsBySymbol.entries()]
     .flatMap(([name, declarations]) => {
-      const files = [...new Set(declarations.map((declaration) => declaration.file))].toSorted();
-      return files.length > 1
-        ? [{ declarations: declarations.toSorted(compareDuplicateDeclarations), files, name }]
+      const duplicateFiles = [...new Set(declarations.map((declaration) => declaration.file))].toSorted();
+      return duplicateFiles.length > 1
+        ? [{ declarations: declarations.toSorted(compareDuplicateDeclarations), files: duplicateFiles, name }]
         : [];
     })
     .toSorted((left, right) => right.files.length - left.files.length || left.name.localeCompare(right.name));
 }
 
+function toDuplicateSymbolDeclaration(file: string, declaration: DeclarationMetrics): DuplicateSymbolDeclaration {
+  return { file, line: declaration.startLine };
+}
+
 function compareDuplicateDeclarations(left: DuplicateSymbolDeclaration, right: DuplicateSymbolDeclaration): number {
   return left.file.localeCompare(right.file) || left.line - right.line;
-}
-
-function lineAtOffset(text: string, offset: number): number {
-  return text.slice(0, offset).split('\n').length;
-}
-
-function isMeaningfulDuplicateSymbol(symbol: string | undefined): symbol is string {
-  return symbol !== undefined && symbol.length >= 4 && !duplicateSymbolStoplist.has(symbol) && symbol !== 'main';
 }
 
 function measureDuplicateGroupCountByFile(groups: DuplicateSymbolGroup[]): Map<string, number> {
@@ -234,56 +182,66 @@ function measureDuplicateGroupCountByFile(groups: DuplicateSymbolGroup[]): Map<s
   return counts;
 }
 
-function measureOrchestration(text: string): OrchestrationMetrics {
-  const awaitCount = countMatches(text, /\bawait\b/gu);
-  const retryLoopCount = countMatches(
-    text,
-    /\bfor\s*\([^)]*(?:attempt|retry)[^)]*\)|\bwhile\s*\([^)]*(?:attempt|retry)[^)]*\)/giu
-  );
-  const mutableStateCount = countMatches(text, /\blet\s+[A-Za-z_$][\w$]*/gu);
-  const earlyReturnCount = countMatches(text, /\breturn\b/gu);
-  const tryFinallyCount = countMatches(text, /\btry\b|\bfinally\b/gu);
-  const processLifecycleScore =
-    countMatches(
-      text,
-      /\b(?:spawn|kill|AbortController|AbortSignal|addEventListener|removeEventListener|setTimeout|clearTimeout|processGroups?|pid|SIGTERM|SIGKILL|signal)\b/gu
-    ) +
-    countMatches(text, /^const\s+[A-Za-z_$][\w$]*\s*=\s*new\s+(?:Map|Set)\b/gmu) * 2;
-  const sideEffectCallCount = countMatches(
-    text,
-    /\b(?:spawn|serve|fetch|graphql|runCommand|runCommandOrThrow|ghAllowExitCodes|write|kill|close|send|sleep|assign|merge|commit|push)\b/gu
-  );
+function measureStructuralCoordination(metrics: CodeMetrics): StructuralCoordinationMetrics {
+  const asyncBoundaryCount = metrics.syntaxFeatures.awaitExpressionCount;
+  const exceptionHandlingCount = metrics.syntaxFeatures.tryStatementCount + metrics.syntaxFeatures.throwStatementCount;
+  const stateMutationScore = metrics.syntaxFeatures.mutableBindingCount + metrics.syntaxFeatures.assignmentCount;
+  const branchingScore =
+    metrics.cyclomaticComplexity +
+    metrics.syntaxFeatures.loopStatementCount +
+    metrics.syntaxFeatures.returnStatementCount;
+  const moduleInteractionScore =
+    metrics.callGraph.callCount + metrics.callGraph.internalEdgeCount * 2 + metrics.callGraph.maxCallDepth * 3;
+
   return {
-    awaitCount,
-    earlyReturnCount,
-    mutableStateCount,
-    processLifecycleScore,
-    retryLoopCount,
-    score: awaitCount + retryLoopCount * 4 + mutableStateCount + sideEffectCallCount + tryFinallyCount * 2,
-    sideEffectCallCount,
-    tryFinallyCount,
+    asyncBoundaryCount,
+    branchingScore,
+    exceptionHandlingCount,
+    moduleInteractionScore,
+    score:
+      asyncBoundaryCount * 2 +
+      exceptionHandlingCount * 3 +
+      stateMutationScore +
+      branchingScore +
+      moduleInteractionScore,
+    stateMutationScore,
   };
 }
 
-function countMatches(text: string, pattern: RegExp): number {
-  pattern.lastIndex = 0;
-  return [...text.matchAll(pattern)].length;
+function measureStructuralFeatureGroups(metrics: CodeMetrics): string[] {
+  const groups = new Set<string>();
+  addGroup(groups, 'class-shapes', metrics.classCount > 0);
+  addGroup(groups, 'control-flow', metrics.cognitiveComplexity > 0);
+  addGroup(groups, 'external-dependencies', metrics.coupling.externalImportCount > 0);
+  addGroup(groups, 'functions', metrics.functionCount > 0);
+  addGroup(groups, 'local-dependencies', metrics.coupling.relativeImportCount > 0);
+  addGroup(groups, 'module-api', metrics.coupling.exportCount > 0 || metrics.module.declarations.length > 0);
+  addGroup(
+    groups,
+    'state-mutation',
+    metrics.syntaxFeatures.mutableBindingCount + metrics.syntaxFeatures.assignmentCount > 0
+  );
+  addGroup(groups, 'type-shapes', hasTypeShapeMetrics(metrics));
+  return [...groups].toSorted();
 }
 
-function measureResponsibilityDomains(file: SourceFile): string[] {
-  const haystack = `${file.relativeFile}\n${stripTextLiteralsAndComments(file.text)}`;
-  return [...responsibilityDomains.entries()]
-    .filter(([, pattern]) => pattern.test(haystack))
-    .map(([domain]) => domain)
-    .toSorted();
+function addGroup(groups: Set<string>, group: string, condition: boolean): void {
+  if (condition) {
+    groups.add(group);
+  }
 }
 
-function stripTextLiteralsAndComments(text: string): string {
-  return text
-    .replaceAll(/\/\*[\s\S]*?\*\//gu, ' ')
-    .replaceAll(/\/\/[^\n\r]*/gu, ' ')
-    .replaceAll(/`(?:\\[\s\S]|[^`\\])*`/gu, ' ')
-    .replaceAll(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/gu, ' ');
+function hasTypeShapeMetrics(metrics: CodeMetrics): boolean {
+  return (
+    metrics.typeComplexity.typeAnnotationCount +
+      metrics.typeComplexity.typeAliasCount +
+      metrics.typeComplexity.interfaceCount +
+      metrics.typeComplexity.genericParameterCount +
+      metrics.typeComplexity.unionTypeCount +
+      metrics.typeComplexity.intersectionTypeCount +
+      metrics.typeComplexity.conditionalTypeCount >
+    0
+  );
 }
 
 function maxFileMetric(metrics: ArchitectureFileMetrics[], key: keyof ArchitectureFileMetrics): number {
