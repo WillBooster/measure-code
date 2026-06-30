@@ -255,6 +255,10 @@ async function isReactRenderableType(type: Type, node: Node, checker: Checker): 
 }
 
 function isFunctionLikeCandidate(node: Node): boolean {
+  if (node.kind === SyntaxKind.FunctionDeclaration && !getNodeProperty(node, 'body')) {
+    return false;
+  }
+
   return (
     node.kind === SyntaxKind.FunctionDeclaration ||
     node.kind === SyntaxKind.FunctionExpression ||
@@ -281,20 +285,42 @@ function findComponentFunctionNode(node: Node): Node {
 
   const initializer = getNodeProperty(node, 'initializer');
   const unwrappedInitializer = initializer ? unwrapExpression(initializer) : undefined;
-  return unwrappedInitializer ? (findFirstFunctionLikeNode(unwrappedInitializer) ?? unwrappedInitializer) : node;
-}
-
-function findFirstFunctionLikeNode(node: Node): Node | undefined {
-  if (isFunctionLikeCandidate(node)) {
+  if (!unwrappedInitializer) {
     return node;
   }
+  if (isFunctionLikeCandidate(unwrappedInitializer)) {
+    return unwrappedInitializer;
+  }
+  if (isComponentImplementationWrapperCall(unwrappedInitializer)) {
+    return findDirectFunctionLikeChild(unwrappedInitializer) ?? node;
+  }
+  return node;
+}
 
-  let foundNode: Node | undefined;
+function isComponentImplementationWrapperCall(node: Node): boolean {
+  if (node.kind !== SyntaxKind.CallExpression) {
+    return false;
+  }
+
+  const expression = getNodeProperty(node, 'expression');
+  const expressionName = expression ? findCallExpressionName(expression) : undefined;
+  return expressionName === 'memo' || expressionName === 'forwardRef';
+}
+
+function findCallExpressionName(expression: Node): string | undefined {
+  const name = getNodeProperty(expression, 'name');
+  return name ? findCandidateName(name) : findCandidateName(expression);
+}
+
+function findDirectFunctionLikeChild(node: Node): Node | undefined {
+  let functionNode: Node | undefined;
   node.forEachChild((child) => {
-    foundNode ??= findFirstFunctionLikeNode(child);
-    return foundNode;
+    if (isFunctionLikeCandidate(child)) {
+      functionNode = child;
+    }
+    return functionNode;
   });
-  return foundNode;
+  return functionNode;
 }
 
 function dedupeReactComponentFunctions(
@@ -371,7 +397,10 @@ function isExpressionWrapperNode(node: Node): boolean {
   );
 }
 
-function getNodeProperty(node: Node, property: 'expression' | 'initializer' | 'name' | 'parent'): Node | undefined {
+function getNodeProperty(
+  node: Node,
+  property: 'body' | 'expression' | 'initializer' | 'name' | 'parent'
+): Node | undefined {
   const value = (node as Partial<Record<typeof property, Node>>)[property];
   return isNode(value) ? value : undefined;
 }

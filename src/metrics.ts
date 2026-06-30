@@ -620,6 +620,7 @@ function isDeclarationContainer(node: Parser.SyntaxNode): boolean {
   return (
     node.type === 'lexical_declaration' ||
     node.type === 'variable_declaration' ||
+    node.type === 'decorated_definition' ||
     node.type === 'type_declaration' ||
     node.type === 'const_declaration' ||
     node.type === 'var_declaration' ||
