@@ -341,7 +341,13 @@ function findFunctionStartPosition(
   const functionName = findCandidateName(name);
   const namePosition = functionName ? text.indexOf(functionName, tokenPosition) : -1;
   const functionPosition = namePosition >= 0 ? text.lastIndexOf('function', namePosition) : -1;
-  return functionPosition >= tokenPosition ? functionPosition : tokenPosition;
+  if (functionPosition < tokenPosition) {
+    return tokenPosition;
+  }
+
+  const modifierText = text.slice(tokenPosition, functionPosition);
+  const asyncMatch = /\basync\s*$/u.exec(modifierText);
+  return asyncMatch ? tokenPosition + asyncMatch.index : functionPosition;
 }
 
 function dedupeReactComponentFunctions(
