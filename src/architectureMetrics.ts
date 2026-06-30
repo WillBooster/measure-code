@@ -52,6 +52,8 @@ interface SourceFile {
   relativeFile: string;
 }
 
+const duplicateSymbolNameLengthThreshold = 3;
+
 export function measureArchitecture(
   files: readonly ArchitectureSourceFile[],
   displayRoot: string
@@ -178,6 +180,9 @@ function measureDuplicateSymbolGroups(files: SourceFile[]): DuplicateSymbolGroup
   const declarationsBySymbol = new Map<string, DuplicateSymbolDeclaration[]>();
   for (const file of files) {
     for (const declaration of file.metrics.module.declarations) {
+      if (!isDuplicateSymbolCandidate(declaration)) {
+        continue;
+      }
       const declarations = declarationsBySymbol.get(declaration.name) ?? [];
       declarations.push(toDuplicateSymbolDeclaration(file.relativeFile, declaration));
       declarationsBySymbol.set(declaration.name, declarations);
@@ -191,6 +196,10 @@ function measureDuplicateSymbolGroups(files: SourceFile[]): DuplicateSymbolGroup
         : [];
     })
     .toSorted((left, right) => right.files.length - left.files.length || left.name.localeCompare(right.name));
+}
+
+function isDuplicateSymbolCandidate(declaration: DeclarationMetrics): boolean {
+  return declaration.name.length >= duplicateSymbolNameLengthThreshold;
 }
 
 function toDuplicateSymbolDeclaration(file: string, declaration: DeclarationMetrics): DuplicateSymbolDeclaration {

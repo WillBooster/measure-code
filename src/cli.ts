@@ -734,6 +734,7 @@ function formatMetricValue(value: number): string {
 
 function formatArchitectureMetrics(metrics: ArchitectureMetrics): string {
   const maxStateMutationScore = Math.max(
+    0,
     ...metrics.files.map((file) => file.structuralCoordination.stateMutationScore)
   );
   return `Architecture max reachable files ${metrics.maxTransitiveLocalDependencyCount}, max structural breadth ${metrics.maxStructuralBreadthScore}, max structural coordination ${metrics.maxStructuralCoordinationScore}, max state mutation ${maxStateMutationScore}, duplicate symbol groups ${metrics.duplicateSymbolGroups.length}`;

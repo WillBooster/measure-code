@@ -661,20 +661,22 @@ function isDeclarationNameNode(node: Parser.SyntaxNode): boolean {
 function collectExportedNames(root: Parser.SyntaxNode): Set<string> {
   const exportedNames = new Set<string>();
 
-  function visit(node: Parser.SyntaxNode): void {
-    if (isExportSpecifierNode(node)) {
+  function visit(node: Parser.SyntaxNode, insideSourcedExport: boolean): void {
+    if (!insideSourcedExport && isExportSpecifierNode(node)) {
       const name = findExportedName(node);
       if (name) {
         exportedNames.add(name);
       }
     }
 
+    const isSourcedExport =
+      insideSourcedExport || (isModuleExportNode(node) && node.childForFieldName('source') !== null);
     for (const child of node.namedChildren) {
-      visit(child);
+      visit(child, isSourcedExport);
     }
   }
 
-  visit(root);
+  visit(root, false);
   return exportedNames;
 }
 
