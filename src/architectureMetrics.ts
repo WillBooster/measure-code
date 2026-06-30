@@ -52,7 +52,7 @@ interface SourceFile {
   relativeFile: string;
 }
 
-const duplicateSymbolNameLengthThreshold = 3;
+const duplicateSymbolNameLengthThreshold = 5;
 
 export function measureArchitecture(
   files: readonly ArchitectureSourceFile[],

@@ -193,8 +193,9 @@ async function collectReactComponentFunctions(
 ): Promise<Omit<ReactComponentFunctionMetric, 'file'>[]> {
   const components: ReactComponentCandidateMetric[] = [];
   const candidates = collectReactComponentCandidates(sourceFile);
+  const hasReactReference = containsReactModuleReference(sourceFile.text);
   for (const candidate of candidates) {
-    if (!(await isReactComponentCandidate(candidate, checker))) {
+    if (!(await isReactComponentCandidate(candidate, checker, hasReactReference))) {
       continue;
     }
     const name = findNameNode(candidate);
@@ -221,7 +222,7 @@ function collectReactComponentCandidates(root: Node): Node[] {
   return candidates;
 }
 
-async function isReactComponentCandidate(node: Node, checker: Checker): Promise<boolean> {
+async function isReactComponentCandidate(node: Node, checker: Checker, hasReactReference: boolean): Promise<boolean> {
   const type = await checker.getTypeAtLocation(node);
   if (!type) {
     return false;
@@ -229,12 +230,12 @@ async function isReactComponentCandidate(node: Node, checker: Checker): Promise<
 
   const name = findNameNode(node);
   const componentName = name ? findCandidateName(name) : undefined;
-  if (await hasReactComponentTypeName(type, node, checker)) {
+  if (hasReactReference && (await hasReactComponentTypeName(type, node, checker))) {
     return true;
   }
 
   const namedType = name ? await checker.getTypeAtLocation(name) : undefined;
-  if (namedType && (await hasReactComponentTypeName(namedType, node, checker))) {
+  if (hasReactReference && namedType && (await hasReactComponentTypeName(namedType, node, checker))) {
     return true;
   }
 
@@ -246,6 +247,10 @@ async function isReactComponentCandidate(node: Node, checker: Checker): Promise<
     (await hasReactRenderableReturnType(type, node, checker)) ||
     Boolean(namedType && (await hasReactRenderableReturnType(namedType, node, checker)))
   );
+}
+
+function containsReactModuleReference(text: string): boolean {
+  return /\bfrom\s+['"]react['"]|\bimport\s+['"]react['"]|\brequire\(\s*['"]react['"]\s*\)/u.test(text);
 }
 
 async function hasReactRenderableReturnType(type: Type, node: Node, checker: Checker): Promise<boolean> {

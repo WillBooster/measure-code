@@ -58,6 +58,7 @@ interface ScanResult {
   errors: string[];
   fatalError?: string;
   files: FileMetrics[];
+  namedComponentFunctionKeys?: Set<string>;
   typeScriptProject?: TypeScriptProjectMetrics;
 }
 
@@ -157,6 +158,7 @@ async function main(): Promise<void> {
       result.files,
       result.architecture,
       result.componentFunctionKeys,
+      result.namedComponentFunctionKeys,
       options,
       result.displayRoot
     );
@@ -259,6 +261,11 @@ async function addTypeScriptProjectMetrics(
     result.componentFunctionKeys = new Set(
       result.typeScriptProject.reactComponentFunctions.map((component) =>
         functionLocationKey(component.file, component.startLine, component.startColumn)
+      )
+    );
+    result.namedComponentFunctionKeys = new Set(
+      result.typeScriptProject.reactComponentFunctions.flatMap((component) =>
+        component.name ? [functionNameLocationKey(component.file, component.name, component.startLine)] : []
       )
     );
   } catch (error) {
@@ -475,6 +482,7 @@ function findRiskyFunctions(
   files: FileMetrics[],
   architecture: ArchitectureMetrics | undefined,
   componentFunctionKeys: Set<string> | undefined,
+  namedComponentFunctionKeys: Set<string> | undefined,
   options: CliOptions,
   displayRoot: string
 ): RiskFinding[] {
@@ -482,7 +490,15 @@ function findRiskyFunctions(
   const findings = files.flatMap(({ file, metrics }) => [
     ...findRiskyFileMetrics(file, metrics, architectureByFile.get(formatPath(file, displayRoot)), options, displayRoot),
     ...metrics.functions.flatMap((fn) =>
-      findRiskyFunctionMetrics(file, metrics.language, fn, options, displayRoot, componentFunctionKeys)
+      findRiskyFunctionMetrics(
+        file,
+        metrics.language,
+        fn,
+        options,
+        displayRoot,
+        componentFunctionKeys,
+        namedComponentFunctionKeys
+      )
     ),
   ]);
 
@@ -560,10 +576,11 @@ function findRiskyFunctionMetrics(
   fn: FunctionMetrics,
   options: CliOptions,
   displayRoot: string,
-  componentFunctionKeys?: Set<string>
+  componentFunctionKeys?: Set<string>,
+  namedComponentFunctionKeys?: Set<string>
 ): RiskFinding[] {
   const loc = fn.endLine - fn.startLine + 1;
-  const isComponent = isReactComponent(file, fn, componentFunctionKeys);
+  const isComponent = isReactComponent(file, fn, componentFunctionKeys, namedComponentFunctionKeys);
   const kind = isComponent ? 'component' : 'function';
   const triggers: RiskTrigger[] = [];
   addTrigger(triggers, 'cognitive complexity', fn.cognitiveComplexity, options.cognitiveThreshold);
@@ -599,8 +616,17 @@ function addTrigger(triggers: RiskTrigger[], metric: string, value: number, thre
   triggers.push({ metric, value, threshold, score: value / threshold });
 }
 
-function isReactComponent(file: string, fn: FunctionMetrics, componentFunctionKeys: Set<string> | undefined): boolean {
-  return componentFunctionKeys?.has(functionLocationKey(file, fn.startLine, fn.startColumn)) ?? false;
+function isReactComponent(
+  file: string,
+  fn: FunctionMetrics,
+  componentFunctionKeys: Set<string> | undefined,
+  namedComponentFunctionKeys: Set<string> | undefined
+): boolean {
+  return (
+    componentFunctionKeys?.has(functionLocationKey(file, fn.startLine, fn.startColumn)) ||
+    (fn.name ? namedComponentFunctionKeys?.has(functionNameLocationKey(file, fn.name, fn.startLine)) : false) ||
+    false
+  );
 }
 
 function getLocThreshold(isComponent: boolean, options: CliOptions): number {
@@ -609,6 +635,10 @@ function getLocThreshold(isComponent: boolean, options: CliOptions): number {
 
 function functionLocationKey(file: string, startLine: number, startColumn: number): string {
   return `${path.resolve(file)}:${startLine}:${startColumn}`;
+}
+
+function functionNameLocationKey(file: string, name: string, startLine: number): string {
+  return `${path.resolve(file)}:${name}:${startLine}`;
 }
 
 function maxTriggerScore(triggers: RiskTrigger[]): number {
