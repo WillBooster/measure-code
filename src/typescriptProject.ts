@@ -1,4 +1,5 @@
 import { realpath } from 'node:fs/promises';
+import path from 'node:path';
 import { API, SignatureKind, type Checker, type Type } from '@typescript/native-preview/unstable/async';
 import { getTokenPosOfNode, SyntaxKind, type Node, type SourceFile } from '@typescript/native-preview/unstable/ast';
 
@@ -53,6 +54,7 @@ export async function measureTypeScriptProject(
       syntacticDiagnosticCount: 0,
     };
     const reactComponentFunctions: ReactComponentFunctionMetric[] = [];
+    const analyzedFiles = new Set<string>();
 
     for (const project of projects) {
       const projectRootFiles = await Promise.all(
@@ -81,14 +83,19 @@ export async function measureTypeScriptProject(
         ...configDiagnostics,
       ]);
 
-      for (const { canonicalFile, file } of projectRootFiles) {
-        if (measuredFileSet.size > 0 && !measuredFileSet.has(canonicalFile)) {
+      const projectAnalysisFiles =
+        measuredFileSet.size === 0
+          ? projectRootFiles
+          : [...measuredFileByCanonicalFile.entries()].map(([canonicalFile, file]) => ({ canonicalFile, file }));
+      for (const { canonicalFile, file } of projectAnalysisFiles) {
+        if (analyzedFiles.has(canonicalFile)) {
           continue;
         }
-        const sourceFile = await project.program.getSourceFile(file);
+        const sourceFile = await getProjectSourceFile(project, file, canonicalFile);
         if (!sourceFile) {
           continue;
         }
+        analyzedFiles.add(canonicalFile);
         const callExpressions = collectCallExpressions(sourceFile);
         totals.callExpressionCount += callExpressions.length;
         const fileReactComponentFunctions = await collectReactComponentFunctions(sourceFile, project.checker);
@@ -120,6 +127,30 @@ export async function measureTypeScriptProject(
   } finally {
     await api.close();
   }
+}
+
+async function getProjectSourceFile(
+  project: { configFileName: string; program: { getSourceFile: (file: string) => Promise<SourceFile | undefined> } },
+  file: string,
+  canonicalFile: string
+): Promise<SourceFile | undefined> {
+  for (const candidate of await getProjectFileCandidates(project.configFileName, file, canonicalFile)) {
+    const sourceFile = await project.program.getSourceFile(candidate);
+    if (sourceFile) {
+      return sourceFile;
+    }
+  }
+  return undefined;
+}
+
+async function getProjectFileCandidates(configFile: string, file: string, canonicalFile: string): Promise<string[]> {
+  const candidates = new Set([file, canonicalFile]);
+  const configDirectory = path.dirname(configFile);
+  const canonicalConfigDirectory = await canonicalizeFile(configDirectory);
+  if (canonicalFile.startsWith(`${canonicalConfigDirectory}${path.sep}`)) {
+    candidates.add(path.join(configDirectory, path.relative(canonicalConfigDirectory, canonicalFile)));
+  }
+  return [...candidates];
 }
 
 async function mapMeasuredFilesByCanonicalFile(files: readonly string[]): Promise<Map<string, string>> {

@@ -599,7 +599,7 @@ function declarationFromNode(node: Parser.SyntaxNode, exported: boolean): Declar
 function findDeclarationName(node: Parser.SyntaxNode): string | undefined {
   const nameNode = node.childForFieldName('name');
   if (nameNode) {
-    return nameNode.text;
+    return isDeclarationNameNode(nameNode) ? nameNode.text : undefined;
   }
 
   return node.namedChildren.find(isDeclarationNameNode)?.text;
@@ -1142,9 +1142,9 @@ function findPythonImportSources(node: Parser.SyntaxNode): string[] {
     }
 
     const moduleSource = normalizeImportSource(moduleNode.text);
-    const nameNode = node.childForFieldName('name');
-    if (/^\.+$/u.test(moduleSource) && nameNode) {
-      return findPythonImportNames(nameNode).map((name) => `${moduleSource}${name}`);
+    const nameNodes = findChildrenByFieldName(node, 'name');
+    if (/^\.+$/u.test(moduleSource) && nameNodes.length > 0) {
+      return nameNodes.flatMap(findPythonImportNames).map((name) => `${moduleSource}${name}`);
     }
     return [moduleSource];
   }
@@ -1159,6 +1159,11 @@ function findPythonImportSources(node: Parser.SyntaxNode): string[] {
 }
 
 function findPythonImportNames(node: Parser.SyntaxNode): string[] {
+  if (node.type === 'aliased_import') {
+    const nameNode = node.childForFieldName('name');
+    return nameNode ? findPythonImportNames(nameNode) : [];
+  }
+
   if (node.type === 'identifier') {
     return [node.text];
   }
@@ -1168,6 +1173,17 @@ function findPythonImportNames(node: Parser.SyntaxNode): string[] {
   }
 
   return node.namedChildren.flatMap(findPythonImportNames);
+}
+
+function findChildrenByFieldName(node: Parser.SyntaxNode, fieldName: string): Parser.SyntaxNode[] {
+  const children: Parser.SyntaxNode[] = [];
+  for (let index = 0; index < node.childCount; index += 1) {
+    const child = node.child(index);
+    if (child && node.fieldNameForChild(index) === fieldName) {
+      children.push(child);
+    }
+  }
+  return children;
 }
 
 function findPythonImportedModuleName(node: Parser.SyntaxNode): string | undefined {
