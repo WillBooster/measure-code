@@ -40,19 +40,21 @@ A finding is reported when a measured value is **greater than or equal to** its 
 ```json
 {
   "thresholds": {
-    "fileLoc": 300,
-    "functionLoc": 80,
-    "componentLoc": 250,
-    "cognitive": 15,
+    "fileLoc": 500,
+    "functionLoc": 120,
+    "componentLoc": 350,
+    "cognitive": 25,
     "cyclomatic": 20,
     "call": 50,
-    "import": 20,
-    "fanOut": 8,
-    "transitiveDependency": 20,
-    "structuralBreadth": 6,
-    "structuralCoordination": 160,
-    "stateMutation": 8,
-    "duplicateSymbolGroup": 3
+    "import": 25,
+    "fanOut": 10,
+    "parameter": 8,
+    "duplicateBlock": 2,
+    "transitiveDependency": 25,
+    "structuralBreadth": 8,
+    "structuralCoordination": 300,
+    "stateMutation": 50,
+    "duplicateSymbolGroup": 5
   },
   "maxFindings": 20,
   "includeTests": false,
@@ -71,6 +73,8 @@ A finding is reported when a measured value is **greater than or equal to** its 
 | `call`                   | `--call-threshold`                    | function makes many calls.                       |
 | `import`                 | `--import-threshold`                  | file has many unique import sources.             |
 | `fanOut`                 | `--fan-out-threshold`                 | function calls many other in-file functions.     |
+| `parameter`              | `--parameter-threshold`               | function declares many parameters.               |
+| `duplicateBlock`         | `--duplicate-block-threshold`         | file contains copy-pasted code blocks.           |
 | `transitiveDependency`   | `--transitive-dependency-threshold`   | file transitively reaches many local files.      |
 | `structuralBreadth`      | `--structural-breadth-threshold`      | file coordinates many structural concerns.       |
 | `structuralCoordination` | `--structural-coordination-threshold` | file's structural coordination score is high.    |
@@ -83,7 +87,8 @@ A finding is reported when a measured value is **greater than or equal to** its 
 - Function and class counts
 - Cyclomatic and cognitive complexity (per function and maximum)
 - Nesting depth
-- Intra-file call graph metrics: call counts, fan-in/fan-out, recursion, and call depth
+- Intra-file call graph metrics: call counts, fan-in/fan-out, recursion, call depth, and parameter counts
+- Within-file structural duplication: copy-pasted code blocks (distinct from cross-file duplicate symbol names)
 - File coupling (imports/exports) and cohesion (shared function identifiers)
 - Architecture metrics: transitive local dependencies, structural coordination and breadth, state mutation, and cross-file duplicate symbols
 - TypeScript type-shape metrics: annotations, aliases, interfaces, generics, unions, intersections, assertions, and conditional types

@@ -51,6 +51,7 @@ export interface FunctionMetrics {
   uniqueCalleeCount: number;
   fanIn: number;
   fanOut: number;
+  parameterCount: number;
   recursive: boolean;
 }
 
@@ -100,6 +101,19 @@ export interface SyntaxFeatureMetrics {
   tryStatementCount: number;
 }
 
+/**
+ * Within-file structural duplication: copy-pasted code blocks whose syntax shape (node types,
+ * ignoring identifiers and literals) repeats. Distinct from cross-file duplicate symbol names.
+ */
+export interface DuplicationMetrics {
+  /** Number of redundant (extra) copies of duplicated blocks, i.e. sum of (groupSize - 1). */
+  duplicateBlockCount: number;
+  /** Number of distinct shapes that appear more than once. */
+  duplicateBlockGroupCount: number;
+  /** Node count of the largest duplicated block, indicating how big the copied region is. */
+  maxDuplicateBlockSize: number;
+}
+
 export interface TypeComplexityMetrics {
   typeAnnotationCount: number;
   typeAliasCount: number;
@@ -131,6 +145,7 @@ export interface CodeMetrics {
   cohesion: CohesionMetrics;
   syntaxFeatures: SyntaxFeatureMetrics;
   typeComplexity: TypeComplexityMetrics;
+  duplication: DuplicationMetrics;
   halstead: HalsteadMetrics;
   maintainabilityIndex: number;
   syntaxTree?: string;

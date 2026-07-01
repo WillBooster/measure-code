@@ -11,6 +11,8 @@ export interface Thresholds {
   call: number;
   import: number;
   fanOut: number;
+  parameter: number;
+  duplicateBlock: number;
   transitiveDependency: number;
   structuralBreadth: number;
   structuralCoordination: number;
@@ -18,20 +20,24 @@ export interface Thresholds {
   duplicateSymbolGroup: number;
 }
 
+// Defaults tuned against blind human labels across five representative WillBooster/WillBoosterLab
+// repositories to maximize F1 (precision without sacrificing recall); see PR for the evaluation.
 export const defaultThresholds: Thresholds = {
-  fileLoc: 300,
-  functionLoc: 80,
-  componentLoc: 250,
-  cognitive: 15,
+  fileLoc: 500,
+  functionLoc: 120,
+  componentLoc: 350,
+  cognitive: 25,
   cyclomatic: 20,
   call: 50,
-  import: 20,
-  fanOut: 8,
-  transitiveDependency: 20,
-  structuralBreadth: 6,
-  structuralCoordination: 160,
-  stateMutation: 8,
-  duplicateSymbolGroup: 3,
+  import: 25,
+  fanOut: 10,
+  parameter: 8,
+  duplicateBlock: 2,
+  transitiveDependency: 25,
+  structuralBreadth: 8,
+  structuralCoordination: 300,
+  stateMutation: 50,
+  duplicateSymbolGroup: 5,
 };
 
 export const defaultMaxFindings = 20;
@@ -69,6 +75,8 @@ export interface CliOptions {
   callThreshold?: number;
   importThreshold?: number;
   fanOutThreshold?: number;
+  parameterThreshold?: number;
+  duplicateBlockThreshold?: number;
   transitiveDependencyThreshold?: number;
   structuralBreadthThreshold?: number;
   structuralCoordinationThreshold?: number;
@@ -92,6 +100,8 @@ const thresholdCliKeys: Record<keyof Thresholds, keyof CliOptions> = {
   call: 'callThreshold',
   import: 'importThreshold',
   fanOut: 'fanOutThreshold',
+  parameter: 'parameterThreshold',
+  duplicateBlock: 'duplicateBlockThreshold',
   transitiveDependency: 'transitiveDependencyThreshold',
   structuralBreadth: 'structuralBreadthThreshold',
   structuralCoordination: 'structuralCoordinationThreshold',

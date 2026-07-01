@@ -6,6 +6,7 @@ export type {
   CohesionMetrics,
   CouplingMetrics,
   DeclarationMetrics,
+  DuplicationMetrics,
   FunctionMetrics,
   HalsteadMetrics,
   LanguageDefinition,

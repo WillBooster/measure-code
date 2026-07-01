@@ -111,6 +111,12 @@ async function main(): Promise<void> {
     .option('--call-threshold <number>', 'minimum function call count to report', parsePositiveInteger)
     .option('--import-threshold <number>', 'minimum unique import sources per file to report', parsePositiveInteger)
     .option('--fan-out-threshold <number>', 'minimum intra-file fan-out per function to report', parsePositiveInteger)
+    .option('--parameter-threshold <number>', 'minimum function parameter count to report', parsePositiveInteger)
+    .option(
+      '--duplicate-block-threshold <number>',
+      'minimum count of duplicated code blocks per file to report',
+      parsePositiveInteger
+    )
     .option(
       '--transitive-dependency-threshold <number>',
       'minimum transitively reachable local files to report',
@@ -520,6 +526,7 @@ function findRiskyFileMetrics(
   const { thresholds } = options;
   addTrigger(triggers, 'file LOC', metrics.lines.code, thresholds.fileLoc);
   addTrigger(triggers, 'import sources', metrics.coupling.importSourceCount, thresholds.import);
+  addTrigger(triggers, 'duplicated blocks', metrics.duplication.duplicateBlockCount, thresholds.duplicateBlock);
   if (architecture) {
     const hasFileScaleRisk = metrics.lines.code >= 100 || architecture.directLocalDependencyCount >= 8;
     if (hasFileScaleRisk) {
@@ -592,6 +599,7 @@ function findRiskyFunctionMetrics(
   addTrigger(triggers, isComponent ? 'component LOC' : 'function LOC', loc, getLocThreshold(isComponent, options));
   addTrigger(triggers, 'function calls', fn.callCount, thresholds.call);
   addTrigger(triggers, 'fan-out', fn.fanOut, thresholds.fanOut);
+  addTrigger(triggers, 'parameters', fn.parameterCount, thresholds.parameter);
   if (triggers.length === 0) {
     return [];
   }
@@ -705,7 +713,7 @@ function printTextReport(target: string, result: ScanResult, risks: RiskFinding[
     writeStdout(`${formatTypeScriptProjectMetrics(result.typeScriptProject)}\n`);
   }
   writeStdout(
-    `Risk thresholds: file LOC >= ${thresholds.fileLoc}, function LOC >= ${thresholds.functionLoc}, component LOC >= ${thresholds.componentLoc}, cognitive >= ${thresholds.cognitive}, cyclomatic >= ${thresholds.cyclomatic}, calls >= ${thresholds.call}, imports >= ${thresholds.import}, fan-out >= ${thresholds.fanOut}\n`
+    `Risk thresholds: file LOC >= ${thresholds.fileLoc}, function LOC >= ${thresholds.functionLoc}, component LOC >= ${thresholds.componentLoc}, cognitive >= ${thresholds.cognitive}, cyclomatic >= ${thresholds.cyclomatic}, calls >= ${thresholds.call}, imports >= ${thresholds.import}, fan-out >= ${thresholds.fanOut}, parameters >= ${thresholds.parameter}, duplicated blocks >= ${thresholds.duplicateBlock}\n`
   );
 
   if (risks.length === 0) {
