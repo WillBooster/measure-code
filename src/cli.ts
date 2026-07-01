@@ -5,26 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { Command, InvalidArgumentError } from 'commander';
 import { measureArchitecture, type ArchitectureFileMetrics, type ArchitectureMetrics } from './architectureMetrics.js';
+import { type CliOptions, configFileName, loadConfig, type ResolvedOptions, resolveOptions } from './cliConfig.js';
 import { measureCode } from './metrics.js';
 import { measureTypeScriptProject, type TypeScriptProjectMetrics } from './typescriptProject.js';
 import type { CodeMetrics, FunctionMetrics, LanguageName } from './types.js';
-
-interface CliOptions {
-  callThreshold: number;
-  cognitiveThreshold: number;
-  componentLocThreshold: number;
-  cyclomaticThreshold: number;
-  fanOutThreshold: number;
-  failOnError?: boolean;
-  failOnRisk?: boolean;
-  fileLocThreshold: number;
-  includeTests?: boolean;
-  importThreshold: number;
-  functionLocThreshold: number;
-  json?: boolean;
-  maxFindings: number;
-  tsconfig?: string;
-}
 
 interface FileMetrics {
   file: string;
@@ -102,11 +86,6 @@ const ignoredDirectoryNames = new Set([
 
 const testDirectoryNames = new Set(['__tests__', 'test', 'tests']);
 const testFilePattern = /(?:^test(?:[_-].*)?|\.(?:spec|test)|[_-]test)\.[^.]+$/iu;
-const transitiveDependencyThreshold = 20;
-const structuralBreadthThreshold = 6;
-const structuralCoordinationThreshold = 160;
-const stateMutationThreshold = 8;
-const duplicateSymbolGroupThreshold = 3;
 
 // oxlint-disable-next-line unicorn/prefer-top-level-await -- CommonJS build output cannot preserve top-level await.
 void main().catch((error: unknown) => {
@@ -119,38 +98,51 @@ async function main(): Promise<void> {
     .name('measure-code')
     .description('Measure code metrics and list high-risk findings.')
     .argument('[target]', 'file or directory to measure', '.')
-    .option('--cognitive-threshold <number>', 'minimum cognitive complexity to report', parsePositiveInteger, 15)
-    .option('--cyclomatic-threshold <number>', 'minimum cyclomatic complexity to report', parsePositiveInteger, 20)
-    .option(
-      '--function-loc-threshold <number>',
-      'minimum function physical LOC span to report',
-      parsePositiveInteger,
-      80
-    )
+    .option('--config <path>', `config file to use instead of the auto-detected ${configFileName}`)
+    .option('--file-loc-threshold <number>', 'minimum file code LOC to report', parsePositiveInteger)
+    .option('--function-loc-threshold <number>', 'minimum function physical LOC span to report', parsePositiveInteger)
     .option(
       '--component-loc-threshold <number>',
       'minimum React component physical LOC span to report',
-      parsePositiveInteger,
-      250
+      parsePositiveInteger
     )
-    .option('--file-loc-threshold <number>', 'minimum file code LOC to report', parsePositiveInteger, 300)
-    .option('--import-threshold <number>', 'minimum unique import sources per file to report', parsePositiveInteger, 20)
-    .option('--call-threshold <number>', 'minimum function call count to report', parsePositiveInteger, 50)
+    .option('--cognitive-threshold <number>', 'minimum cognitive complexity to report', parsePositiveInteger)
+    .option('--cyclomatic-threshold <number>', 'minimum cyclomatic complexity to report', parsePositiveInteger)
+    .option('--call-threshold <number>', 'minimum function call count to report', parsePositiveInteger)
+    .option('--import-threshold <number>', 'minimum unique import sources per file to report', parsePositiveInteger)
+    .option('--fan-out-threshold <number>', 'minimum intra-file fan-out per function to report', parsePositiveInteger)
     .option(
-      '--fan-out-threshold <number>',
-      'minimum intra-file fan-out per function to report',
-      parsePositiveInteger,
-      8
+      '--transitive-dependency-threshold <number>',
+      'minimum transitively reachable local files to report',
+      parsePositiveInteger
     )
-    .option('--max-findings <number>', 'maximum number of risk findings to print', parsePositiveInteger, 20)
+    .option(
+      '--structural-breadth-threshold <number>',
+      'minimum structural breadth score to report',
+      parsePositiveInteger
+    )
+    .option(
+      '--structural-coordination-threshold <number>',
+      'minimum structural coordination score to report',
+      parsePositiveInteger
+    )
+    .option('--state-mutation-threshold <number>', 'minimum state mutation score to report', parsePositiveInteger)
+    .option(
+      '--duplicate-symbol-group-threshold <number>',
+      'minimum duplicate symbol group count to report',
+      parsePositiveInteger
+    )
+    .option('--max-findings <number>', 'maximum number of risk findings to print', parsePositiveInteger)
     .option('--include-tests', 'include test files and test directories')
     .option('--tsconfig <path>', 'TypeScript project file to use instead of auto-detected tsconfig.json')
     .option('--json', 'print JSON output')
     .option('--fail-on-error', 'exit with code 1 when files or directories cannot be scanned')
     .option('--fail-on-risk', 'exit with code 1 when high-risk findings are found');
 
-  program.action(async (target: string, options: CliOptions) => {
+  program.action(async (target: string, cliOptions: CliOptions) => {
     const resolvedTarget = resolveTarget(target);
+    const config = await loadConfig(cliOptions.config, await configSearchDirectory(resolvedTarget));
+    const options = resolveOptions(cliOptions, config);
     const result = await scanTarget(resolvedTarget, options);
     await addArchitectureMetrics(result);
     await addTypeScriptProjectMetrics(result, options, resolvedTarget);
@@ -193,7 +185,17 @@ function resolveTarget(target: string): string {
   return path.resolve(target);
 }
 
-async function scanTarget(target: string, options: CliOptions): Promise<ScanResult> {
+/** Returns the directory from which the config file search should start (the target itself if it is a directory). */
+async function configSearchDirectory(target: string): Promise<string> {
+  try {
+    const targetStat = await stat(target);
+    return targetStat.isDirectory() ? target : path.dirname(target);
+  } catch {
+    return path.dirname(target);
+  }
+}
+
+async function scanTarget(target: string, options: ResolvedOptions): Promise<ScanResult> {
   const files: FileMetrics[] = [];
   const errors: string[] = [];
   const visitedFiles = new Set<string>();
@@ -232,7 +234,7 @@ async function scanTarget(target: string, options: CliOptions): Promise<ScanResu
 
 async function addTypeScriptProjectMetrics(
   result: ScanResult,
-  options: CliOptions,
+  options: ResolvedOptions,
   resolvedTarget: string
 ): Promise<void> {
   if (result.fatalError) {
@@ -322,7 +324,7 @@ async function addArchitectureMetrics(result: ScanResult): Promise<void> {
 
 async function scanDirectory(
   directory: string,
-  options: CliOptions,
+  options: ResolvedOptions,
   files: FileMetrics[],
   errors: string[],
   visitedDirectories: Set<string>,
@@ -387,7 +389,7 @@ async function scanDirectory(
 async function scanSymbolicLink(
   name: string,
   entryPath: string,
-  options: CliOptions,
+  options: ResolvedOptions,
   files: FileMetrics[],
   errors: string[],
   visitedDirectories: Set<string>,
@@ -438,7 +440,7 @@ async function scanSymbolicLink(
 
 async function measureScannableFile(
   file: string,
-  options: CliOptions,
+  options: ResolvedOptions,
   files: FileMetrics[],
   errors: string[],
   visitedFiles: Set<string>,
@@ -483,7 +485,7 @@ function findRiskyFunctions(
   architecture: ArchitectureMetrics | undefined,
   componentFunctionKeys: Set<string> | undefined,
   namedComponentFunctionKeys: Set<string> | undefined,
-  options: CliOptions,
+  options: ResolvedOptions,
   displayRoot: string
 ): RiskFinding[] {
   const architectureByFile = new Map(architecture?.files.map((file) => [file.file, file]));
@@ -510,13 +512,14 @@ function findRiskyFileMetrics(
   file: string,
   metrics: CodeMetrics,
   architecture: ArchitectureFileMetrics | undefined,
-  options: CliOptions,
+  options: ResolvedOptions,
   displayRoot: string
 ): RiskFinding[] {
   const triggers: RiskTrigger[] = [];
   const formattedFile = formatPath(file, displayRoot);
-  addTrigger(triggers, 'file LOC', metrics.lines.code, options.fileLocThreshold);
-  addTrigger(triggers, 'import sources', metrics.coupling.importSourceCount, options.importThreshold);
+  const { thresholds } = options;
+  addTrigger(triggers, 'file LOC', metrics.lines.code, thresholds.fileLoc);
+  addTrigger(triggers, 'import sources', metrics.coupling.importSourceCount, thresholds.import);
   if (architecture) {
     const hasFileScaleRisk = metrics.lines.code >= 100 || architecture.directLocalDependencyCount >= 8;
     if (hasFileScaleRisk) {
@@ -524,33 +527,33 @@ function findRiskyFileMetrics(
         triggers,
         'transitive local dependencies',
         architecture.transitiveLocalDependencyCount,
-        transitiveDependencyThreshold
+        thresholds.transitiveDependency
       );
     }
     if (
       triggers.length > 0 ||
       architecture.directLocalDependencyCount >= 8 ||
-      architecture.structuralCoordination.score >= structuralCoordinationThreshold
+      architecture.structuralCoordination.score >= thresholds.structuralCoordination
     ) {
-      addTrigger(triggers, 'structural breadth', architecture.structuralBreadthScore, structuralBreadthThreshold);
+      addTrigger(triggers, 'structural breadth', architecture.structuralBreadthScore, thresholds.structuralBreadth);
     }
     addTrigger(
       triggers,
       'structural coordination',
       architecture.structuralCoordination.score,
-      structuralCoordinationThreshold
+      thresholds.structuralCoordination
     );
     addTrigger(
       triggers,
       'state mutation',
       architecture.structuralCoordination.stateMutationScore,
-      stateMutationThreshold
+      thresholds.stateMutation
     );
     addTrigger(
       triggers,
       'duplicate symbol groups',
       architecture.duplicateSymbolGroupCount,
-      duplicateSymbolGroupThreshold
+      thresholds.duplicateSymbolGroup
     );
   }
   if (triggers.length === 0) {
@@ -574,7 +577,7 @@ function findRiskyFunctionMetrics(
   file: string,
   language: LanguageName,
   fn: FunctionMetrics,
-  options: CliOptions,
+  options: ResolvedOptions,
   displayRoot: string,
   componentFunctionKeys?: Set<string>,
   namedComponentFunctionKeys?: Set<string>
@@ -583,11 +586,12 @@ function findRiskyFunctionMetrics(
   const isComponent = isReactComponent(file, fn, componentFunctionKeys, namedComponentFunctionKeys);
   const kind = isComponent ? 'component' : 'function';
   const triggers: RiskTrigger[] = [];
-  addTrigger(triggers, 'cognitive complexity', fn.cognitiveComplexity, options.cognitiveThreshold);
-  addTrigger(triggers, 'cyclomatic complexity', fn.cyclomaticComplexity, options.cyclomaticThreshold);
+  const { thresholds } = options;
+  addTrigger(triggers, 'cognitive complexity', fn.cognitiveComplexity, thresholds.cognitive);
+  addTrigger(triggers, 'cyclomatic complexity', fn.cyclomaticComplexity, thresholds.cyclomatic);
   addTrigger(triggers, isComponent ? 'component LOC' : 'function LOC', loc, getLocThreshold(isComponent, options));
-  addTrigger(triggers, 'function calls', fn.callCount, options.callThreshold);
-  addTrigger(triggers, 'fan-out', fn.fanOut, options.fanOutThreshold);
+  addTrigger(triggers, 'function calls', fn.callCount, thresholds.call);
+  addTrigger(triggers, 'fan-out', fn.fanOut, thresholds.fanOut);
   if (triggers.length === 0) {
     return [];
   }
@@ -629,8 +633,8 @@ function isReactComponent(
   );
 }
 
-function getLocThreshold(isComponent: boolean, options: CliOptions): number {
-  return isComponent ? options.componentLocThreshold : options.functionLocThreshold;
+function getLocThreshold(isComponent: boolean, options: ResolvedOptions): number {
+  return isComponent ? options.thresholds.componentLoc : options.thresholds.functionLoc;
 }
 
 function functionLocationKey(file: string, startLine: number, startColumn: number): string {
@@ -655,28 +659,14 @@ function compareRiskFindings(left: RiskFinding, right: RiskFinding): number {
   );
 }
 
-function printJson(result: ScanResult, risks: RiskFinding[], options: CliOptions): void {
+function printJson(result: ScanResult, risks: RiskFinding[], options: ResolvedOptions): void {
   const summary = summarize(result.files);
   const reportedRisks = risks.slice(0, options.maxFindings);
   writeStdout(
     JSON.stringify(
       {
         summary,
-        thresholds: {
-          cyclomaticComplexity: options.cyclomaticThreshold,
-          cognitiveComplexity: options.cognitiveThreshold,
-          callCount: options.callThreshold,
-          componentLoc: options.componentLocThreshold,
-          fanOut: options.fanOutThreshold,
-          fileLoc: options.fileLocThreshold,
-          functionLoc: options.functionLocThreshold,
-          importSources: options.importThreshold,
-          duplicateSymbolGroups: duplicateSymbolGroupThreshold,
-          stateMutation: stateMutationThreshold,
-          structuralBreadth: structuralBreadthThreshold,
-          structuralCoordination: structuralCoordinationThreshold,
-          transitiveLocalDependencies: transitiveDependencyThreshold,
-        },
+        thresholds: options.thresholds,
         totalRisks: risks.length,
         truncated: reportedRisks.length < risks.length,
         architecture: result.architecture,
@@ -690,12 +680,13 @@ function printJson(result: ScanResult, risks: RiskFinding[], options: CliOptions
   );
 }
 
-function printTextReport(target: string, result: ScanResult, risks: RiskFinding[], options: CliOptions): void {
+function printTextReport(target: string, result: ScanResult, risks: RiskFinding[], options: ResolvedOptions): void {
   if (result.fatalError) {
     writeStderr(`Error: ${result.fatalError}\n`);
     return;
   }
 
+  const { thresholds } = options;
   const summary = summarize(result.files);
   writeStdout(`Measured ${summary.fileCount} files under ${target}\n`);
   writeStdout(
@@ -714,7 +705,7 @@ function printTextReport(target: string, result: ScanResult, risks: RiskFinding[
     writeStdout(`${formatTypeScriptProjectMetrics(result.typeScriptProject)}\n`);
   }
   writeStdout(
-    `Risk thresholds: file LOC >= ${options.fileLocThreshold}, function LOC >= ${options.functionLocThreshold}, component LOC >= ${options.componentLocThreshold}, cognitive >= ${options.cognitiveThreshold}, cyclomatic >= ${options.cyclomaticThreshold}, calls >= ${options.callThreshold}, imports >= ${options.importThreshold}, fan-out >= ${options.fanOutThreshold}\n`
+    `Risk thresholds: file LOC >= ${thresholds.fileLoc}, function LOC >= ${thresholds.functionLoc}, component LOC >= ${thresholds.componentLoc}, cognitive >= ${thresholds.cognitive}, cyclomatic >= ${thresholds.cyclomatic}, calls >= ${thresholds.call}, imports >= ${thresholds.import}, fan-out >= ${thresholds.fanOut}\n`
   );
 
   if (risks.length === 0) {
@@ -850,7 +841,7 @@ function summarize(files: FileMetrics[]): {
   };
 }
 
-function shouldSkipDirectory(name: string, options: CliOptions): boolean {
+function shouldSkipDirectory(name: string, options: ResolvedOptions): boolean {
   if (ignoredDirectoryNames.has(name)) {
     return true;
   }
@@ -867,7 +858,7 @@ function isWithinDirectory(candidate: string, directory: string): boolean {
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
-function getLanguage(file: string, options: CliOptions, explicitTarget = false): LanguageName | undefined {
+function getLanguage(file: string, options: ResolvedOptions, explicitTarget = false): LanguageName | undefined {
   const lowerFile = file.toLowerCase();
   if (
     !explicitTarget &&

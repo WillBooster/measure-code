@@ -3,6 +3,7 @@
   "version": "0.0.0-semantically-released",
   "description": "Measure code metrics with tree-sitter.",
   "keywords": [
+    "cli",
     "tree-sitter",
     "metrics",
     "loc",
