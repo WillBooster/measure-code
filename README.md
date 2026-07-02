@@ -40,19 +40,25 @@ A finding is reported when a measured value is **greater than or equal to** its 
 ```json
 {
   "thresholds": {
-    "fileLoc": 300,
-    "functionLoc": 80,
-    "componentLoc": 250,
-    "cognitive": 15,
+    "fileLoc": 500,
+    "functionLoc": 120,
+    "componentLoc": 350,
+    "cognitive": 25,
     "cyclomatic": 20,
     "call": 50,
-    "import": 20,
-    "fanOut": 8,
-    "transitiveDependency": 20,
-    "structuralBreadth": 6,
-    "structuralCoordination": 160,
-    "stateMutation": 8,
-    "duplicateSymbolGroup": 3
+    "import": 25,
+    "fanOut": 10,
+    "parameter": 8,
+    "duplicateBlock": 2,
+    "transitiveDependency": 25,
+    "structuralBreadth": 8,
+    "structuralCoordination": 300,
+    "stateMutation": 50,
+    "duplicateSymbolGroup": 5
+  },
+  "languageThresholds": {
+    "python": { "stateMutation": 90, "structuralCoordination": 350 },
+    "react": { "import": 30 }
   },
   "maxFindings": 20,
   "includeTests": false,
@@ -71,11 +77,37 @@ A finding is reported when a measured value is **greater than or equal to** its 
 | `call`                   | `--call-threshold`                    | function makes many calls.                       |
 | `import`                 | `--import-threshold`                  | file has many unique import sources.             |
 | `fanOut`                 | `--fan-out-threshold`                 | function calls many other in-file functions.     |
+| `parameter`              | `--parameter-threshold`               | function declares many parameters.               |
+| `duplicateBlock`         | `--duplicate-block-threshold`         | file contains copy-pasted code blocks.           |
 | `transitiveDependency`   | `--transitive-dependency-threshold`   | file transitively reaches many local files.      |
 | `structuralBreadth`      | `--structural-breadth-threshold`      | file coordinates many structural concerns.       |
 | `structuralCoordination` | `--structural-coordination-threshold` | file's structural coordination score is high.    |
 | `stateMutation`          | `--state-mutation-threshold`          | file mutates state heavily.                      |
 | `duplicateSymbolGroup`   | `--duplicate-symbol-group-threshold`  | file shares many duplicated symbols with others. |
+
+### Per-language thresholds
+
+Some metrics distribute very differently by language or file type, so a single global threshold either
+over-flags one language or under-flags another. `languageThresholds` overrides individual thresholds for a
+profile without repeating the whole set. Each file resolves its thresholds as **base → its language profile →
+the `react` profile** (the last applies when the file contains a React component), so later profiles win.
+
+Valid profile keys are `javascript`, `jsx`, `typescript`, `tsx`, `python`, `go`, and `react`. Built-in
+overrides raise `stateMutation` and `structuralCoordination` for Python (every binding is an assignment, so
+these run far higher than in TypeScript) and raise `import` for React files (which pull in many components).
+Anything you specify is merged on top of the built-in overrides, so `{ "python": { "stateMutation": 8 } }`
+restores the global value for Python while keeping the other built-in adjustments.
+
+```json
+{
+  "languageThresholds": {
+    "python": { "stateMutation": 120 },
+    "react": { "componentLoc": 400, "import": 35 }
+  }
+}
+```
+
+Command-line `--<metric>-threshold` flags set the global base only; use the config file for per-language tuning.
 
 ## Metrics
 
@@ -83,7 +115,8 @@ A finding is reported when a measured value is **greater than or equal to** its 
 - Function and class counts
 - Cyclomatic and cognitive complexity (per function and maximum)
 - Nesting depth
-- Intra-file call graph metrics: call counts, fan-in/fan-out, recursion, and call depth
+- Intra-file call graph metrics: call counts, fan-in/fan-out, recursion, call depth, and parameter counts
+- Within-file structural duplication: copy-pasted code blocks (distinct from cross-file duplicate symbol names)
 - File coupling (imports/exports) and cohesion (shared function identifiers)
 - Architecture metrics: transitive local dependencies, structural coordination and breadth, state mutation, and cross-file duplicate symbols
 - TypeScript type-shape metrics: annotations, aliases, interfaces, generics, unions, intersections, assertions, and conditional types

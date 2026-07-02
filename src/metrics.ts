@@ -6,6 +6,7 @@ import type {
   CohesionMetrics,
   CouplingMetrics,
   DeclarationMetrics,
+  DuplicationMetrics,
   FunctionMetrics,
   HalsteadMetrics,
   LanguageDefinition,
@@ -95,6 +96,7 @@ interface FunctionAnalysis {
   cyclomaticComplexity: number;
   cognitiveComplexity: number;
   callCount: number;
+  parameterCount: number;
   callees: Set<string>;
   identifiers: Set<string>;
 }
@@ -160,6 +162,7 @@ export class TreeMeasurer {
       cohesion: structuralMetrics.cohesion,
       syntaxFeatures: structuralMetrics.syntaxFeatures,
       typeComplexity: structuralMetrics.typeComplexity,
+      duplication: measureDuplication(root),
       halstead,
       maintainabilityIndex: calculateMaintainabilityIndex(
         halstead.volume,
@@ -196,6 +199,7 @@ function measureStructuralMetrics(
     uniqueCalleeCount: analysis.callees.size,
     fanIn: callGraph.fanInByIndex.get(analysis.index) ?? 0,
     fanOut: callGraph.fanOutByIndex.get(analysis.index) ?? 0,
+    parameterCount: analysis.parameterCount,
     recursive: callGraph.recursiveIndexes.has(analysis.index),
   }));
 
@@ -223,9 +227,22 @@ function analyzeFunction(node: Parser.SyntaxNode, language: LanguageDefinition, 
     cyclomaticComplexity: complexity.cyclomaticComplexity,
     cognitiveComplexity: complexity.cognitiveComplexity,
     callCount: calls.callCount,
+    parameterCount: countParameters(node),
     callees: calls.callees,
     identifiers: collectIdentifiers(node),
   };
+}
+
+/** Counts declared parameters of a function/method, ignoring punctuation and comments. */
+function countParameters(node: Parser.SyntaxNode): number {
+  const parametersNode =
+    node.childForFieldName('parameters') ??
+    node.namedChildren.find((child) => child.type === 'formal_parameters' || child.type === 'parameter_list');
+  if (!parametersNode) {
+    return 0;
+  }
+
+  return parametersNode.namedChildren.filter((child) => child.type !== 'comment').length;
 }
 
 function measureCallGraph(analyses: FunctionAnalysis[]): {
@@ -933,6 +950,140 @@ function measureTypeComplexity(root: Parser.SyntaxNode): TypeComplexityMetrics {
 
   visit(root);
   return metrics;
+}
+
+const duplicateBlockTypes = new Set([
+  'statement_block',
+  'block',
+  'if_statement',
+  'for_statement',
+  'for_in_statement',
+  'while_statement',
+  'do_statement',
+  'try_statement',
+  'with_statement',
+  'switch_statement',
+  'switch_case',
+  'case_clause',
+  'match_statement',
+  'match_arm',
+  'except_clause',
+  'catch_clause',
+  'finally_clause',
+  'elif_clause',
+  'expression_statement',
+  'return_statement',
+  'jsx_element',
+  'jsx_self_closing_element',
+]);
+
+/** Minimum subtree size (node count) for a block to be considered for duplication, to skip trivial repeats. */
+const minDuplicateBlockSize = 24;
+
+interface DuplicateCandidate {
+  node: Parser.SyntaxNode;
+  shape: string;
+  size: number;
+}
+
+/**
+ * Detects copy-pasted code blocks within a file by grouping control-flow / block / JSX subtrees that
+ * share the same syntactic shape (node types, ignoring identifiers and literals). Only maximal,
+ * non-overlapping blocks are counted so nested matches are not double-counted. Literal-only structures
+ * such as array or object data are excluded because their element nodes are not block types.
+ */
+function measureDuplication(root: Parser.SyntaxNode): DuplicationMetrics {
+  const candidates: DuplicateCandidate[] = [];
+  const shapeCache = new Map<number, { shape: string; size: number }>();
+
+  function visit(node: Parser.SyntaxNode): void {
+    if (duplicateBlockTypes.has(node.type)) {
+      const { size } = describeShape(node, shapeCache);
+      if (size >= minDuplicateBlockSize) {
+        const { shape } = describeShape(node, shapeCache);
+        candidates.push({ node, shape, size });
+      }
+    }
+    for (const child of node.namedChildren) {
+      visit(child);
+    }
+  }
+  visit(root);
+
+  const byShape = new Map<string, DuplicateCandidate[]>();
+  for (const candidate of candidates) {
+    const group = byShape.get(candidate.shape) ?? [];
+    group.push(candidate);
+    byShape.set(candidate.shape, group);
+  }
+
+  // Count larger blocks first and skip any candidate nested inside an already-counted duplicate.
+  const counted: DuplicateCandidate[] = [];
+  const consumed: Parser.SyntaxNode[] = [];
+  let duplicateBlockCount = 0;
+  let maxDuplicateBlockSize = 0;
+  const groupCounts = new Map<string, number>();
+  for (const [shape, group] of byShape) {
+    if (group.length < 2) {
+      continue;
+    }
+    for (const candidate of group.toSorted((left, right) => right.size - left.size)) {
+      if (consumed.some((ancestor) => isAncestor(ancestor, candidate.node))) {
+        continue;
+      }
+      counted.push(candidate);
+      consumed.push(candidate.node);
+      groupCounts.set(shape, (groupCounts.get(shape) ?? 0) + 1);
+      maxDuplicateBlockSize = Math.max(maxDuplicateBlockSize, candidate.size);
+    }
+  }
+  let duplicateBlockGroupCount = 0;
+  for (const count of groupCounts.values()) {
+    if (count >= 2) {
+      duplicateBlockCount += count - 1;
+      duplicateBlockGroupCount += 1;
+    }
+  }
+
+  return { duplicateBlockCount, duplicateBlockGroupCount, maxDuplicateBlockSize };
+}
+
+/** Serializes a subtree by node type only (ignoring identifiers and literals) and reports its node count. */
+function describeShape(
+  node: Parser.SyntaxNode,
+  cache: Map<number, { shape: string; size: number }>
+): { shape: string; size: number } {
+  const cached = cache.get(node.id);
+  if (cached) {
+    return cached;
+  }
+
+  let shape = node.type;
+  let size = 1;
+  if (node.namedChildCount > 0) {
+    const parts: string[] = [];
+    for (const child of node.namedChildren) {
+      const childShape = describeShape(child, cache);
+      parts.push(childShape.shape);
+      size += childShape.size;
+    }
+    shape = `${node.type}(${parts.join(',')})`;
+  }
+
+  const result = { shape, size };
+  cache.set(node.id, result);
+  return result;
+}
+
+function isAncestor(ancestor: Parser.SyntaxNode, node: Parser.SyntaxNode): boolean {
+  let current = node.parent;
+  while (current) {
+    if (current.id === ancestor.id) {
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
 }
 
 function measureLines(code: string, root: Parser.SyntaxNode): CodeMetrics['lines'] {
