@@ -43,9 +43,28 @@ export const defaultThresholds: Thresholds = {
 export const defaultMaxFindings = 20;
 export const configFileName = 'measure-code.config.json';
 
+/**
+ * Profile keys for per-language and React-specific threshold overrides. A file resolves its
+ * thresholds as base → its language profile → the `react` profile (when it contains a component).
+ */
+export const profileKeys = ['javascript', 'jsx', 'typescript', 'tsx', 'python', 'go', 'react'] as const;
+export type ProfileKey = (typeof profileKeys)[number];
+
+/**
+ * Built-in per-profile overrides, calibrated because some metric distributions differ sharply by
+ * language/type: Python treats every binding as an assignment (so `stateMutation` runs ~10x higher)
+ * and coordinates more per file, while React files import roughly twice as many sources as pure TS.
+ */
+export const defaultProfileThresholds: Partial<Record<ProfileKey, Partial<Thresholds>>> = {
+  python: { stateMutation: 90, structuralCoordination: 350 },
+  react: { import: 30 },
+};
+
 /** Shape of the JSON configuration file. All fields are optional and fall back to the built-in defaults. */
 export interface MeasureCodeConfig {
   thresholds?: Partial<Thresholds>;
+  /** Per-profile overrides keyed by language name or `react`; merged over `thresholds` for matching files. */
+  languageThresholds?: Partial<Record<ProfileKey, Partial<Thresholds>>>;
   maxFindings?: number;
   includeTests?: boolean;
   failOnRisk?: boolean;
@@ -56,12 +75,29 @@ export interface MeasureCodeConfig {
 /** Options after merging command-line flags, the configuration file, and the built-in defaults. */
 export interface ResolvedOptions {
   thresholds: Thresholds;
+  profileThresholds: Partial<Record<ProfileKey, Partial<Thresholds>>>;
   maxFindings: number;
   includeTests: boolean;
   failOnRisk: boolean;
   failOnError: boolean;
   json: boolean;
   tsconfig?: string;
+}
+
+/**
+ * Resolves the thresholds for a single file: the base thresholds overlaid with its language profile
+ * and then, when the file contains a React component, the `react` profile.
+ */
+export function resolveThresholds(options: ResolvedOptions, language: string, isReact: boolean): Thresholds {
+  let thresholds = options.thresholds;
+  const languageOverride = options.profileThresholds[language as ProfileKey];
+  if (languageOverride) {
+    thresholds = { ...thresholds, ...languageOverride };
+  }
+  if (isReact && options.profileThresholds.react) {
+    thresholds = { ...thresholds, ...options.profileThresholds.react };
+  }
+  return thresholds;
 }
 
 /** Raw command-line options; every threshold is undefined unless the user passed the flag. */
@@ -118,6 +154,7 @@ export function resolveOptions(cli: CliOptions, config: MeasureCodeConfig): Reso
 
   return {
     thresholds,
+    profileThresholds: mergeProfileThresholds(defaultProfileThresholds, config.languageThresholds),
     maxFindings: cli.maxFindings ?? config.maxFindings ?? defaultMaxFindings,
     includeTests: cli.includeTests ?? config.includeTests ?? false,
     failOnRisk: cli.failOnRisk ?? config.failOnRisk ?? false,
@@ -125,6 +162,21 @@ export function resolveOptions(cli: CliOptions, config: MeasureCodeConfig): Reso
     json: cli.json ?? false,
     tsconfig: cli.tsconfig ?? config.tsconfig,
   };
+}
+
+/** Merges user-supplied per-profile overrides on top of the built-in ones, per profile. */
+function mergeProfileThresholds(
+  defaults: Partial<Record<ProfileKey, Partial<Thresholds>>>,
+  overrides: Partial<Record<ProfileKey, Partial<Thresholds>>> | undefined
+): Partial<Record<ProfileKey, Partial<Thresholds>>> {
+  const merged: Partial<Record<ProfileKey, Partial<Thresholds>>> = {};
+  for (const key of profileKeys) {
+    const combined = { ...defaults[key], ...overrides?.[key] };
+    if (Object.keys(combined).length > 0) {
+      merged[key] = combined;
+    }
+  }
+  return merged;
 }
 
 /**
@@ -194,17 +246,31 @@ function validateConfig(value: unknown, configFile: string): MeasureCodeConfig {
   const config: MeasureCodeConfig = {};
 
   if (raw.thresholds !== undefined) {
-    if (typeof raw.thresholds !== 'object' || raw.thresholds === null || Array.isArray(raw.thresholds)) {
-      throw new Error(`Config file "${configFile}": "thresholds" must be an object.`);
+    config.thresholds = validateThresholdObject(raw.thresholds, 'thresholds', configFile);
+  }
+
+  if (raw.languageThresholds !== undefined) {
+    if (
+      typeof raw.languageThresholds !== 'object' ||
+      raw.languageThresholds === null ||
+      Array.isArray(raw.languageThresholds)
+    ) {
+      throw new Error(`Config file "${configFile}": "languageThresholds" must be an object.`);
     }
-    const thresholds: Partial<Thresholds> = {};
-    for (const [key, threshold] of Object.entries(raw.thresholds as Record<string, unknown>)) {
-      if (!(key in defaultThresholds)) {
-        throw new Error(`Config file "${configFile}": unknown threshold "${key}".`);
+    const languageThresholds: Partial<Record<ProfileKey, Partial<Thresholds>>> = {};
+    for (const [profile, thresholds] of Object.entries(raw.languageThresholds as Record<string, unknown>)) {
+      if (!(profileKeys as readonly string[]).includes(profile)) {
+        throw new Error(
+          `Config file "${configFile}": unknown language profile "${profile}" (expected one of ${profileKeys.join(', ')}).`
+        );
       }
-      thresholds[key as keyof Thresholds] = requirePositiveInteger(threshold, `thresholds.${key}`, configFile);
+      languageThresholds[profile as ProfileKey] = validateThresholdObject(
+        thresholds,
+        `languageThresholds.${profile}`,
+        configFile
+      );
     }
-    config.thresholds = thresholds;
+    config.languageThresholds = languageThresholds;
   }
 
   if (raw.maxFindings !== undefined) {
@@ -223,6 +289,20 @@ function validateConfig(value: unknown, configFile: string): MeasureCodeConfig {
   }
 
   return config;
+}
+
+function validateThresholdObject(value: unknown, label: string, configFile: string): Partial<Thresholds> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`Config file "${configFile}": "${label}" must be an object.`);
+  }
+  const thresholds: Partial<Thresholds> = {};
+  for (const [key, threshold] of Object.entries(value as Record<string, unknown>)) {
+    if (!(key in defaultThresholds)) {
+      throw new Error(`Config file "${configFile}": unknown threshold "${key}" in "${label}".`);
+    }
+    thresholds[key as keyof Thresholds] = requirePositiveInteger(threshold, `${label}.${key}`, configFile);
+  }
+  return thresholds;
 }
 
 function requirePositiveInteger(value: unknown, key: string, configFile: string): number {

@@ -56,6 +56,10 @@ A finding is reported when a measured value is **greater than or equal to** its 
     "stateMutation": 50,
     "duplicateSymbolGroup": 5
   },
+  "languageThresholds": {
+    "python": { "stateMutation": 90, "structuralCoordination": 350 },
+    "react": { "import": 30 }
+  },
   "maxFindings": 20,
   "includeTests": false,
   "failOnRisk": false,
@@ -80,6 +84,30 @@ A finding is reported when a measured value is **greater than or equal to** its 
 | `structuralCoordination` | `--structural-coordination-threshold` | file's structural coordination score is high.    |
 | `stateMutation`          | `--state-mutation-threshold`          | file mutates state heavily.                      |
 | `duplicateSymbolGroup`   | `--duplicate-symbol-group-threshold`  | file shares many duplicated symbols with others. |
+
+### Per-language thresholds
+
+Some metrics distribute very differently by language or file type, so a single global threshold either
+over-flags one language or under-flags another. `languageThresholds` overrides individual thresholds for a
+profile without repeating the whole set. Each file resolves its thresholds as **base → its language profile →
+the `react` profile** (the last applies when the file contains a React component), so later profiles win.
+
+Valid profile keys are `javascript`, `jsx`, `typescript`, `tsx`, `python`, `go`, and `react`. Built-in
+overrides raise `stateMutation` and `structuralCoordination` for Python (every binding is an assignment, so
+these run far higher than in TypeScript) and raise `import` for React files (which pull in many components).
+Anything you specify is merged on top of the built-in overrides, so `{ "python": { "stateMutation": 8 } }`
+restores the global value for Python while keeping the other built-in adjustments.
+
+```json
+{
+  "languageThresholds": {
+    "python": { "stateMutation": 120 },
+    "react": { "componentLoc": 400, "import": 35 }
+  }
+}
+```
+
+Command-line `--<metric>-threshold` flags set the global base only; use the config file for per-language tuning.
 
 ## Metrics
 

@@ -5,7 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { Command, InvalidArgumentError } from 'commander';
 import { measureArchitecture, type ArchitectureFileMetrics, type ArchitectureMetrics } from './architectureMetrics.js';
-import { type CliOptions, configFileName, loadConfig, type ResolvedOptions, resolveOptions } from './cliConfig.js';
+import {
+  type CliOptions,
+  configFileName,
+  loadConfig,
+  type ResolvedOptions,
+  resolveOptions,
+  resolveThresholds,
+  type Thresholds,
+} from './cliConfig.js';
 import { measureCode } from './metrics.js';
 import { measureTypeScriptProject, type TypeScriptProjectMetrics } from './typescriptProject.js';
 import type { CodeMetrics, FunctionMetrics, LanguageName } from './types.js';
@@ -495,20 +503,32 @@ function findRiskyFunctions(
   displayRoot: string
 ): RiskFinding[] {
   const architectureByFile = new Map(architecture?.files.map((file) => [file.file, file]));
-  const findings = files.flatMap(({ file, metrics }) => [
-    ...findRiskyFileMetrics(file, metrics, architectureByFile.get(formatPath(file, displayRoot)), options, displayRoot),
-    ...metrics.functions.flatMap((fn) =>
-      findRiskyFunctionMetrics(
+  const findings = files.flatMap(({ file, metrics }) => {
+    const isReactFile = metrics.functions.some(
+      (fn) => fn.returnsJsx || isReactComponent(file, fn, componentFunctionKeys, namedComponentFunctionKeys)
+    );
+    const thresholds = resolveThresholds(options, metrics.language, isReactFile);
+    return [
+      ...findRiskyFileMetrics(
         file,
-        metrics.language,
-        fn,
-        options,
-        displayRoot,
-        componentFunctionKeys,
-        namedComponentFunctionKeys
-      )
-    ),
-  ]);
+        metrics,
+        architectureByFile.get(formatPath(file, displayRoot)),
+        thresholds,
+        displayRoot
+      ),
+      ...metrics.functions.flatMap((fn) =>
+        findRiskyFunctionMetrics(
+          file,
+          metrics.language,
+          fn,
+          thresholds,
+          displayRoot,
+          componentFunctionKeys,
+          namedComponentFunctionKeys
+        )
+      ),
+    ];
+  });
 
   findings.sort(compareRiskFindings);
   return findings;
@@ -518,12 +538,11 @@ function findRiskyFileMetrics(
   file: string,
   metrics: CodeMetrics,
   architecture: ArchitectureFileMetrics | undefined,
-  options: ResolvedOptions,
+  thresholds: Thresholds,
   displayRoot: string
 ): RiskFinding[] {
   const triggers: RiskTrigger[] = [];
   const formattedFile = formatPath(file, displayRoot);
-  const { thresholds } = options;
   addTrigger(triggers, 'file LOC', metrics.lines.code, thresholds.fileLoc);
   addTrigger(triggers, 'import sources', metrics.coupling.importSourceCount, thresholds.import);
   addTrigger(triggers, 'duplicated blocks', metrics.duplication.duplicateBlockCount, thresholds.duplicateBlock);
@@ -584,7 +603,7 @@ function findRiskyFunctionMetrics(
   file: string,
   language: LanguageName,
   fn: FunctionMetrics,
-  options: ResolvedOptions,
+  thresholds: Thresholds,
   displayRoot: string,
   componentFunctionKeys?: Set<string>,
   namedComponentFunctionKeys?: Set<string>
@@ -593,10 +612,9 @@ function findRiskyFunctionMetrics(
   const isComponent = isReactComponent(file, fn, componentFunctionKeys, namedComponentFunctionKeys);
   const kind = isComponent ? 'component' : 'function';
   const triggers: RiskTrigger[] = [];
-  const { thresholds } = options;
   addTrigger(triggers, 'cognitive complexity', fn.cognitiveComplexity, thresholds.cognitive);
   addTrigger(triggers, 'cyclomatic complexity', fn.cyclomaticComplexity, thresholds.cyclomatic);
-  addTrigger(triggers, isComponent ? 'component LOC' : 'function LOC', loc, getLocThreshold(isComponent, options));
+  addTrigger(triggers, isComponent ? 'component LOC' : 'function LOC', loc, getLocThreshold(isComponent, thresholds));
   addTrigger(triggers, 'function calls', fn.callCount, thresholds.call);
   addTrigger(triggers, 'fan-out', fn.fanOut, thresholds.fanOut);
   addTrigger(triggers, 'parameters', fn.parameterCount, thresholds.parameter);
@@ -641,8 +659,8 @@ function isReactComponent(
   );
 }
 
-function getLocThreshold(isComponent: boolean, options: ResolvedOptions): number {
-  return isComponent ? options.thresholds.componentLoc : options.thresholds.functionLoc;
+function getLocThreshold(isComponent: boolean, thresholds: Thresholds): number {
+  return isComponent ? thresholds.componentLoc : thresholds.functionLoc;
 }
 
 function functionLocationKey(file: string, startLine: number, startColumn: number): string {
@@ -675,6 +693,7 @@ function printJson(result: ScanResult, risks: RiskFinding[], options: ResolvedOp
       {
         summary,
         thresholds: options.thresholds,
+        profileThresholds: options.profileThresholds,
         totalRisks: risks.length,
         truncated: reportedRisks.length < risks.length,
         architecture: result.architecture,
@@ -715,6 +734,10 @@ function printTextReport(target: string, result: ScanResult, risks: RiskFinding[
   writeStdout(
     `Risk thresholds: file LOC >= ${thresholds.fileLoc}, function LOC >= ${thresholds.functionLoc}, component LOC >= ${thresholds.componentLoc}, cognitive >= ${thresholds.cognitive}, cyclomatic >= ${thresholds.cyclomatic}, calls >= ${thresholds.call}, imports >= ${thresholds.import}, fan-out >= ${thresholds.fanOut}, parameters >= ${thresholds.parameter}, duplicated blocks >= ${thresholds.duplicateBlock}\n`
   );
+  const profileOverrides = formatProfileOverrides(options.profileThresholds);
+  if (profileOverrides) {
+    writeStdout(`Per-language overrides: ${profileOverrides}\n`);
+  }
 
   if (risks.length === 0) {
     writeStdout('No high-risk findings found.\n');
@@ -736,6 +759,17 @@ function printTextReport(target: string, result: ScanResult, risks: RiskFinding[
       writeStderr(`- ... ${result.errors.length - 10} more\n`);
     }
   }
+}
+
+function formatProfileOverrides(profileThresholds: ResolvedOptions['profileThresholds']): string {
+  return Object.entries(profileThresholds)
+    .map(
+      ([profile, overrides]) =>
+        `${profile} { ${Object.entries(overrides)
+          .map(([metric, value]) => `${metric} ${value}`)
+          .join(', ')} }`
+    )
+    .join('; ');
 }
 
 function formatRiskLocation(risk: RiskFinding): string {
