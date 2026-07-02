@@ -3813,7 +3813,7 @@ __metadata:
     tree-sitter-typescript: "npm:^0.21.2"
     vitest: "npm:4.1.9"
   bin:
-    code-gauge: ./dist/cli.js
+    code-gauge: dist/cli.js
   languageName: unknown
   linkType: soft
 
