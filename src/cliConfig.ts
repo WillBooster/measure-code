@@ -41,7 +41,7 @@ export const defaultThresholds: Thresholds = {
 };
 
 export const defaultMaxFindings = 20;
-export const configFileName = 'measure-code.config.json';
+export const configFileName = 'code-gauge.config.json';
 
 /**
  * Profile keys for per-language and React-specific threshold overrides. A file resolves its
@@ -61,7 +61,7 @@ export const defaultProfileThresholds: Partial<Record<ProfileKey, Partial<Thresh
 };
 
 /** Shape of the JSON configuration file. All fields are optional and fall back to the built-in defaults. */
-export interface MeasureCodeConfig {
+export interface CodeGaugeConfig {
   thresholds?: Partial<Thresholds>;
   /** Per-profile overrides keyed by language name or `react`; merged over `thresholds` for matching files. */
   languageThresholds?: Partial<Record<ProfileKey, Partial<Thresholds>>>;
@@ -146,7 +146,7 @@ const thresholdCliKeys: Record<keyof Thresholds, keyof CliOptions> = {
 };
 
 /** Resolves options with precedence command-line flags > configuration file > built-in defaults. */
-export function resolveOptions(cli: CliOptions, config: MeasureCodeConfig): ResolvedOptions {
+export function resolveOptions(cli: CliOptions, config: CodeGaugeConfig): ResolvedOptions {
   const thresholds = { ...defaultThresholds };
   for (const key of Object.keys(thresholds) as (keyof Thresholds)[]) {
     thresholds[key] = (cli[thresholdCliKeys[key]] as number | undefined) ?? config.thresholds?.[key] ?? thresholds[key];
@@ -181,12 +181,9 @@ function mergeProfileThresholds(
 
 /**
  * Loads the configuration file. An explicit path must exist; otherwise the nearest
- * `measure-code.config.json` is searched by walking up from the target directory.
+ * `code-gauge.config.json` is searched by walking up from the target directory.
  */
-export async function loadConfig(
-  explicitPath: string | undefined,
-  targetDirectory: string
-): Promise<MeasureCodeConfig> {
+export async function loadConfig(explicitPath: string | undefined, targetDirectory: string): Promise<CodeGaugeConfig> {
   const configFile = explicitPath ?? (await findNearestConfig(targetDirectory));
   if (!configFile) {
     return {};
@@ -237,13 +234,13 @@ async function fileExists(file: string): Promise<boolean> {
   }
 }
 
-function validateConfig(value: unknown, configFile: string): MeasureCodeConfig {
+function validateConfig(value: unknown, configFile: string): CodeGaugeConfig {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error(`Config file "${configFile}" must contain a JSON object.`);
   }
 
   const raw = value as Record<string, unknown>;
-  const config: MeasureCodeConfig = {};
+  const config: CodeGaugeConfig = {};
 
   if (raw.thresholds !== undefined) {
     config.thresholds = validateThresholdObject(raw.thresholds, 'thresholds', configFile);

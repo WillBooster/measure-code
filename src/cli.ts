@@ -103,7 +103,7 @@ void main().catch((error: unknown) => {
 
 async function main(): Promise<void> {
   const program = new Command()
-    .name('measure-code')
+    .name('code-gauge')
     .description('Measure code metrics and list high-risk findings.')
     .argument('[target]', 'file or directory to measure', '.')
     .option('--config <path>', `config file to use instead of the auto-detected ${configFileName}`)
