@@ -1,6 +1,6 @@
 ## Project Information
 
-- Name: `tree-measurer`
+- Name: `code-gauge`
 - Description: Measure code metrics with tree-sitter.
 - Package Manager: yarn
 

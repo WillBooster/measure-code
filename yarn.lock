@@ -3786,6 +3786,37 @@ __metadata:
   languageName: node
   linkType: hard
 
+"code-gauge@workspace:.":
+  version: 0.0.0-use.local
+  resolution: "code-gauge@workspace:."
+  dependencies:
+    "@tsconfig/node-lts": "npm:24.0.0"
+    "@tsconfig/node-ts": "npm:23.6.4"
+    "@types/node": "npm:25.9.4"
+    "@typescript/native-preview": "npm:7.0.0-dev.20260615.1"
+    "@willbooster/oxfmt-config": "npm:1.2.2"
+    "@willbooster/oxlint-config": "npm:1.4.8"
+    "@willbooster/wb": "npm:13.22.18"
+    build-ts: "npm:17.1.27"
+    commander: "npm:15.0.0"
+    conventional-changelog-conventionalcommits: "npm:9.3.1"
+    lefthook: "npm:2.1.9"
+    oxfmt: "npm:0.56.0"
+    oxlint: "npm:1.71.0"
+    oxlint-tsgolint: "npm:0.23.0"
+    semantic-release: "npm:25.0.5"
+    sort-package-json: "npm:4.0.0"
+    tree-sitter: "npm:^0.21.1"
+    tree-sitter-go: "npm:^0.21.2"
+    tree-sitter-javascript: "npm:^0.21.4"
+    tree-sitter-python: "npm:^0.21.0"
+    tree-sitter-typescript: "npm:^0.21.2"
+    vitest: "npm:4.1.9"
+  bin:
+    code-gauge: ./dist/cli.js
+  languageName: unknown
+  linkType: soft
+
 "color-convert@npm:^1.9.0":
   version: 1.9.3
   resolution: "color-convert@npm:1.9.3"
@@ -5692,37 +5723,6 @@ __metadata:
   checksum: 10c0/e09da211544b787ecfb25fed07af206060bf7cd6d9de6cb123f15c496a57f83b7aabea93340aaa94dae9c94e097ae129377cad6310abc16009590972e85f4212
   languageName: node
   linkType: hard
-
-"measure-code@workspace:.":
-  version: 0.0.0-use.local
-  resolution: "measure-code@workspace:."
-  dependencies:
-    "@tsconfig/node-lts": "npm:24.0.0"
-    "@tsconfig/node-ts": "npm:23.6.4"
-    "@types/node": "npm:25.9.4"
-    "@typescript/native-preview": "npm:7.0.0-dev.20260615.1"
-    "@willbooster/oxfmt-config": "npm:1.2.2"
-    "@willbooster/oxlint-config": "npm:1.4.8"
-    "@willbooster/wb": "npm:13.22.18"
-    build-ts: "npm:17.1.27"
-    commander: "npm:15.0.0"
-    conventional-changelog-conventionalcommits: "npm:9.3.1"
-    lefthook: "npm:2.1.9"
-    oxfmt: "npm:0.56.0"
-    oxlint: "npm:1.71.0"
-    oxlint-tsgolint: "npm:0.23.0"
-    semantic-release: "npm:25.0.5"
-    sort-package-json: "npm:4.0.0"
-    tree-sitter: "npm:^0.21.1"
-    tree-sitter-go: "npm:^0.21.2"
-    tree-sitter-javascript: "npm:^0.21.4"
-    tree-sitter-python: "npm:^0.21.0"
-    tree-sitter-typescript: "npm:^0.21.2"
-    vitest: "npm:4.1.9"
-  bin:
-    measure-code: ./dist/cli.js
-  languageName: unknown
-  linkType: soft
 
 "meow@npm:^13.0.0":
   version: 13.2.0
